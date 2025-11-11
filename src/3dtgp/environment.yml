@@ -7,4 +7,13 @@ dependencies:
   - matplotlib
   - seaborn
   - numpy
+  - pyproj
+  - xarray
+  - jupyterlab
+  - shapely
+  - rasterio
+  - networkx
+  - geopandas
+  - dask
+  - pyvista
 prefix: /home/aidan/.conda/envs/3dtgp
