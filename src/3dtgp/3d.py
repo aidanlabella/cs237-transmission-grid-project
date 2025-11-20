@@ -35,6 +35,7 @@ except Exception:
 
 # Basemap bits
 try:
+<<<<<<< HEAD
     import contextily as cx
     from pyproj import Transformer
     _HAS_BASEMAP = True
@@ -43,6 +44,18 @@ except Exception:
 
 # --------- Configuration ----------
 DATA_DIR = Path("/home/aidan/sandbox/cs237-transmission-grid-project/data/WECC_metadata")
+=======
+    from pyproj import Transformer
+    import contextily as cx
+    _HAS_BASEMAP = True
+except Exception:
+    print("No contextily or pyproj")
+    _HAS_BASEMAP = False
+
+# --------- Configuration ----------
+# DATA_DIR = Path(os.environ.get("WECC_DATA_DIR", "/mnt/data"))
+DATA_DIR = Path("/Users/aidan/sandbox/cs237-transmission-grid-project/data/WECC_metadata")
+>>>>>>> ee39b276f84214392628a862f9037fefb8ddedf2
 FILES = {
     "bus": DATA_DIR / "bus_info.csv",
     "branch": DATA_DIR / "branch_info.csv",

@@ -1,19 +1,22 @@
 name: 3dtgp
 channels:
   - defaults
+  - conda-forge
 dependencies:
-  - python=3.11
-  - pandas
-  - matplotlib
-  - seaborn
-  - numpy
-  - pyproj
-  - xarray
-  - jupyterlab
-  - shapely
-  - rasterio
-  - networkx
-  - geopandas
   - dask
+  - geopandas
+  - jupyterlab
+  - matplotlib
+  - networkx
+  - numpy
+  - pandas
+  - pyproj
+  - python=3.11
   - pyvista
-prefix: /home/aidan/.conda/envs/3dtgp
+  - rasterio
+  - seaborn
+  - shapely
+  - xarray
+  - gdal
+  - libnetcdf
+prefix: /opt/homebrew/Caskroom/miniconda/base/envs/3dtgp
