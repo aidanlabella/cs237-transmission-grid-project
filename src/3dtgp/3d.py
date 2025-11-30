@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-# wecc_poc_with_labels_and_basemap.py
+# wecc_3d_currents.py
 #
 # One-file WECC POC:
 #   - builds graph from your CSVs
 #   - force-directed layout normalized to WECC bbox (projected to EPSG:3857)
-#   - satellite basemap plane (Esri World Imagery) under the scene
+#   - optional GeoTIFF basemap plane under the scene (no contextily)
 #   - interactive 3D render (PyVista) with:
 #       * persistent bus labels (toggle with 'l')
 #       * click-to-label bus names near the pick
+#       * time-slider animation that colors branches by current
 #   - 2D matplotlib fallback if PyVista isn't available
 #
-# Expected files (adjust DATA_DIR below if needed):
-#   bus_info.csv        [bus_number, bus_name, bus_area]
-#   branch_info.csv     [from_bus, to_bus, branch_name, branch_type]
-#   gen_info.csv        [bus_number, gen_name]
-#   load_info.csv       [bus_number, load_name]
-#   wecc_outline.geojson (Polygon/MultiPolygon in lon/lat EPSG:4326)
+# Expected files (adjust DATA_DIR / FILES paths as needed):
+#   bus_info.csv          [bus_number, bus_name, bus_area]
+#   branch_info.csv       [from_bus, to_bus, branch_name, branch_type]
+#   gen_info.csv          [bus_number, gen_name]
+#   load_info.csv         [bus_number, load_name]
+#   wecc_outline.geojson  (Polygon/MultiPolygon in lon/lat EPSG:4326)
+#   wecc_satellite.tif    (optional raster basemap in EPSG:3857)
+#   branch_currents.csv   (per-timestep branch currents, header names = branch_name)
 
-import config
 import json
 import math
 import os
@@ -27,36 +29,46 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-# Optional: PyVista for 3D; otherwise fall back to 2D
+# 3D rendering
 try:
     import pyvista as pv
     _HAS_PYVISTA = True
 except Exception:
     _HAS_PYVISTA = False
 
-# Basemap bits
-try:
-    import contextily as cx
-    from pyproj import Transformer
-    _HAS_BASEMAP = True
-except Exception:
-    _HAS_BASEMAP = False
+# Raster + projection
+import rasterio
+from pyproj import Transformer
+
+# Colormap for animation
+from matplotlib import colormaps, colors
 
 # --------- Configuration ----------
-DATA_DIR = Path(config.DATA_PATH)
+METADATA_DIR = Path('/Users/aidan/sandbox/cs237-transmission-grid-project/data/WECC_metadata')
+SIMDATA_DIR = Path('/Users/aidan/sandbox/cs237-transmission-grid-project/data/WECC_sim_data/trip_branch_MESA CAL    -2408-MESA CAL    -2438-i_360')
+
 FILES = {
-    "bus": DATA_DIR / "bus_info.csv",
-    "branch": DATA_DIR / "branch_info.csv",
-    "gen": DATA_DIR / "gen_info.csv",
-    "load": DATA_DIR / "load_info.csv",
-    "outline": DATA_DIR / "wecc_outline.geojson",
+    "bus": METADATA_DIR / "bus_info.csv",
+    "branch": METADATA_DIR / "branch_info.csv",
+    "gen": METADATA_DIR / "gen_info.csv",
+    "load": METADATA_DIR / "load_info.csv",
+    "outline": METADATA_DIR / "wecc_outline.geojson",
+    "basemap": METADATA_DIR / "wecc_satellite.tif",    # optional, can be missing
+    "currents": SIMDATA_DIR / "branch_current_real.csv",  # per-timestep branch currents
 }
 
-USE_BASEMAP = True          # set False to disable basemap
-BASEMAP_ZOOM = 6            # 4..9 typical; higher = sharper (larger download)
-BASEMAP_Z_OFFSET = -1500.0  # meters below graph, tweak if needed
+USE_BASEMAP = True
+BASEMAP_Z_OFFSET = -1500.0  # meters below the graph
 
-# --------- IO ---------
+# --------- Helpers ---------
+
+def normalize_name(s):
+    """
+    Collapse all runs of whitespace to a single space and strip ends.
+    This makes CSV headers match branch_info 'branch_name' robustly.
+    """
+    return " ".join(str(s).split())
+
 
 def load_tables():
     buses = pd.read_csv(FILES["bus"])
@@ -75,9 +87,11 @@ def load_tables():
         assert req in loads.columns, f"Missing '{req}' in load_info.csv"
     return buses, branches, gens, loads, outline
 
-# --------- GeoJSON bbox (EPSG:4326 lon/lat) ---------
 
 def geojson_bounds_ll(geojson_obj):
+    """
+    Return (xmin, xmax, ymin, ymax) in lon/lat from a Polygon/MultiPolygon GeoJSON.
+    """
     def coords_iter(feature):
         geom = feature.get("geometry", {})
         gtype = geom.get("type")
@@ -101,21 +115,30 @@ def geojson_bounds_ll(geojson_obj):
         return (0.0, 1.0, 0.0, 1.0)
     return (min(xs), max(xs), min(ys), max(ys))
 
+
 def project_bbox_to_3857(bbox_ll):
+    """
+    Project lon/lat bbox to EPSG:3857 and return (xmin, xmax, ymin, ymax) in meters.
+    """
     xmin, xmax, ymin, ymax = bbox_ll
     to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
     x0, y0 = to_3857(xmin, ymin)
     x1, y1 = to_3857(xmax, ymax)
-    # normalize ordering (in case inputs cross antimeridian or similar)
     xmin_m, xmax_m = min(x0, x1), max(x0, x1)
     ymin_m, ymax_m = min(y0, y1), max(y0, y1)
     return (xmin_m, xmax_m, ymin_m, ymax_m)
 
-# --------- Graph build ---------
 
-def build_graph(buses: pd.DataFrame, branches: pd.DataFrame,
-                gens: pd.DataFrame, loads: pd.DataFrame) -> nx.Graph:
+def build_graph(buses, branches, gens, loads):
+    """
+    Build a NetworkX graph:
+      - bus nodes (kind='bus')
+      - generator leaf nodes connected to bus (kind='gen')
+      - load leaf nodes connected to bus (kind='load')
+      - branches as edges between buses, storing both raw and normalized names
+    """
     G = nx.Graph()
+
     # buses
     for _, r in buses.iterrows():
         bn = int(r["bus_number"])
@@ -126,6 +149,7 @@ def build_graph(buses: pd.DataFrame, branches: pd.DataFrame,
             bus_name=str(r["bus_name"]).strip(),
             bus_area=int(r["bus_area"]),
         )
+
     # generators
     for _, r in gens.iterrows():
         bn = int(r["bus_number"])
@@ -134,6 +158,7 @@ def build_graph(buses: pd.DataFrame, branches: pd.DataFrame,
             gnode = f"gen:{gen_name}"
             G.add_node(gnode, kind="gen", bus_number=bn, name=gen_name)
             G.add_edge(f"bus:{bn}", gnode, kind="gen_tie")
+
     # loads
     for _, r in loads.iterrows():
         bn = int(r["bus_number"])
@@ -142,21 +167,26 @@ def build_graph(buses: pd.DataFrame, branches: pd.DataFrame,
             lnode = f"load:{load_name}"
             G.add_node(lnode, kind="load", bus_number=bn, name=load_name)
             G.add_edge(f"bus:{bn}", lnode, kind="load_tie")
+
     # branches (bus↔bus)
     for _, r in branches.iterrows():
-        a = int(r["from_bus"]); b = int(r["to_bus"])
+        a = int(r["from_bus"])
+        b = int(r["to_bus"])
         if f"bus:{a}" in G and f"bus:{b}" in G:
+            branch_name_raw = r.get("branch_name", "")
+            branch_name_norm = normalize_name(branch_name_raw)
             G.add_edge(
                 f"bus:{a}",
                 f"bus:{b}",
                 kind=str(r.get("branch_type", "Line")).strip(),
-                name=str(r.get("branch_name", "")).strip(),
+                name_raw=str(branch_name_raw),
+                name=branch_name_norm,
             )
+
     return G
 
-# --------- Layout (mapped to EPSG:3857 bbox) ---------
 
-def compute_layout_positions(G: nx.Graph, bbox_3857):
+def compute_layout_positions(G, bbox_3857):
     """
     Returns dict: node -> (x, y, z) in EPSG:3857 meters.
     1) spring_layout on bus-only backbone
@@ -190,11 +220,13 @@ def compute_layout_positions(G: nx.Graph, bbox_3857):
         return x, y
 
     pos3 = {}
+    # buses on z=0
     for n, p in pos2.items():
         p01 = norm(p)
         x, y = to_bbox(p01)
         pos3[n] = (x, y, 0.0)
 
+    # gens/loads near parent bus
     for n, d in G.nodes(data=True):
         if d.get("kind") in ("gen", "load"):
             bn = d["bus_number"]
@@ -203,77 +235,133 @@ def compute_layout_positions(G: nx.Graph, bbox_3857):
                 px, py, pz = pos3[parent]
                 h = abs(hash(n)) % 360
                 ang = math.radians(h)
-                r = 0.015 * (xmax - xmin)  # small offset relative to width
+                r = 0.015 * (xmax - xmin)
                 x = px + r * math.cos(ang)
                 y = py + r * math.sin(ang)
                 z = 50.0 if d["kind"] == "gen" else 0.0
                 pos3[n] = (x, y, z)
             else:
                 pos3[n] = (xmin, ymin, 0.0)
+
     return pos3
 
-# --------- Basemap (EPSG:3857) ---------
 
-def build_basemap_plane(bbox_3857, zoom=6, z_offset=-1500.0):
+def build_basemap_plane_from_geotiff(tif_path, z_offset=-1500.0):
     """
-    Fetches satellite tiles for the bbox and returns (plane_mesh, texture).
-    plane is centered at bbox, dimensions match bbox size, at z=z_offset.
+    Reads a GeoTIFF basemap (in EPSG:3857) and returns (plane_mesh, texture, bounds).
+    The plane covers the raster's bounds and is placed at z=z_offset.
     """
-    if not _HAS_BASEMAP:
-        raise RuntimeError("contextily/pyproj not available. Install with: conda install -c conda-forge contextily pyproj")
+    if not tif_path.exists():
+        raise FileNotFoundError(f"Basemap GeoTIFF not found: {tif_path}")
 
-    xmin, xmax, ymin, ymax = bbox_3857
-    # Download satellite imagery as one image + its extent
-    img, ext = cx.bounds2img(xmin, ymin, xmax, ymax, zoom=zoom, source=cx.providers.Esri.WorldImagery)
-    left, right, bottom, top = ext
-    width = right - left
-    height = top - bottom
+    with rasterio.open(tif_path) as src:
+        left, bottom, right, top = src.bounds
+        width = right - left
+        height = top - bottom
 
-    # Build a textured plane with UVs
-    plane = pv.Plane(center=((left + right) / 2, (bottom + top) / 2, z_offset),
-                     i_size=width, j_size=height,
-                     i_resolution=max(img.shape[1] - 1, 1),
-                     j_resolution=max(img.shape[0] - 1, 1))
+        data = src.read()  # shape: (bands, height, width)
+        if data.dtype != np.uint8:
+            data = data.astype(np.uint8)
+        img = np.transpose(data, (1, 2, 0))  # -> (height, width, bands)
+
+    plane = pv.Plane(
+        center=((left + right) / 2, (bottom + top) / 2, z_offset),
+        i_size=width,
+        j_size=height,
+        i_resolution=max(img.shape[1] - 1, 1),
+        j_resolution=max(img.shape[0] - 1, 1),
+    )
+
     plane.texture_map_to_plane(inplace=True)
-    tex = pv.Texture(img)  # HxWx(3/4) uint8
-    return plane, tex
+    tex = pv.Texture(img)
+    return plane, tex, (left, right, bottom, top)
+
+
+def load_branch_currents():
+    """
+    Load per-timestep branch currents from CSV.
+    CSV format:
+        time,<branch_name1>,<branch_name2>,...
+    Returns:
+        times: pandas.Series
+        currents_df: DataFrame (T x Nbranches) with normalized column names
+    """
+    if not FILES["currents"].exists():
+        print(f"[currents] file not found: {FILES['currents']}")
+        return None, None
+
+    df = pd.read_csv(FILES["currents"])
+    if "time" not in df.columns:
+        raise ValueError("Currents CSV must have a 'time' column as the first column.")
+
+    times = df["time"]
+    df = df.drop(columns=["time"])
+
+    # Normalize column names for robust matching with branch_info
+    df = df.rename(columns={c: normalize_name(c) for c in df.columns})
+    return times, df
 
 # --------- Rendering (PyVista) ---------
 
-def render_network_pyvista(G: nx.Graph, pos: dict, bbox_3857, use_basemap=True, zoom=6, z_offset=-1500.0):
+def render_network_pyvista(
+        G,
+        pos,
+        bbox_3857,
+        use_basemap=True,
+        times=None,
+        currents_df=None,
+):
+    """
+    Render the WECC graph in 3D with PyVista, optional basemap and current coloring.
+    """
     plotter = pv.Plotter(window_size=(1200, 850))
     xmin, xmax, ymin, ymax = bbox_3857
 
-    # Basemap (optional)
-    if use_basemap and _HAS_BASEMAP:
+    # Basemap plane if requested
+    if use_basemap:
         try:
-            plane, tex = build_basemap_plane(bbox_3857, zoom=zoom, z_offset=z_offset)
+            plane, tex, _ = build_basemap_plane_from_geotiff(
+                FILES["basemap"],
+                z_offset=BASEMAP_Z_OFFSET,
+            )
             plotter.add_mesh(plane, texture=tex, smooth_shading=False)
         except Exception as e:
             print(f"[basemap] skipped: {e}")
-
-    # Subtle frame slab if no basemap (visual reference)
-    if not use_basemap or not _HAS_BASEMAP:
+            frame_z = -0.001 * (ymax - ymin)
+            frame = pv.Cube(
+                center=((xmin + xmax) / 2, (ymin + ymax) / 2, frame_z),
+                x_length=(xmax - xmin),
+                y_length=(ymax - ymin),
+                z_length=(ymax - ymin) * 0.0005,
+            )
+            plotter.add_mesh(frame, opacity=0.05, show_edges=True)
+    else:
         frame_z = -0.001 * (ymax - ymin)
-        frame = pv.Cube(center=((xmin + xmax)/2, (ymin + ymax)/2, frame_z),
-                        x_length=(xmax - xmin),
-                        y_length=(ymax - ymin),
-                        z_length=(ymax - ymin) * 0.0005)
+        frame = pv.Cube(
+            center=((xmin + xmax) / 2, (ymin + ymax) / 2, frame_z),
+            x_length=(xmax - xmin),
+            y_length=(ymax - ymin),
+            z_length=(ymax - ymin) * 0.0005,
+        )
         plotter.add_mesh(frame, opacity=0.05, show_edges=True)
 
-    # Edges
-    def add_edge(u, v, radius):
+    # Edges (lines/tubes) and actors keyed by branch name
+    edge_actors = {}
+
+    for u, v, ed in G.edges(data=True):
+        kind = ed.get("kind", "Line")
+        radius = 0.0015 * (xmax - xmin) if kind == "Line" else 0.0009 * (xmax - xmin)
         axyz = np.array(pos[u])
         bxyz = np.array(pos[v])
         pts = np.vstack([axyz, bxyz])
         line = pv.Spline(pts, 2)
         tube = line.tube(radius=radius)
-        plotter.add_mesh(tube, smooth_shading=True)
+        actor = plotter.add_mesh(tube, smooth_shading=True)
 
-    for u, v, ed in G.edges(data=True):
-        kind = ed.get("kind", "Line")
-        radius = 0.0015 * (xmax - xmin) if kind == "Line" else 0.0009 * (xmax - xmin)
-        add_edge(u, v, radius)
+        if kind == "Line":  # only treat bus↔bus branches as current-carrying lines
+            branch_name_norm = ed.get("name", "")
+            if branch_name_norm:
+                edge_actors[branch_name_norm] = actor
 
     # Nodes
     for n, d in G.nodes(data=True):
@@ -309,13 +397,16 @@ def render_network_pyvista(G: nx.Graph, pos: dict, bbox_3857, use_basemap=True, 
             always_visible=False,
             render=False,
         )
+
         def toggle_labels():
             labels_actor.SetVisibility(not labels_actor.GetVisibility())
             plotter.render()
-        plotter.add_key_event("l", toggle_labels)
+
+        plotter.add_key_event("l", lambda: toggle_labels())
 
     # Click-to-show a single bus label
     hud = {"actor": None}
+
     def show_pick_label(picked):
         if picked is None:
             return
@@ -345,30 +436,127 @@ def render_network_pyvista(G: nx.Graph, pos: dict, bbox_3857, use_basemap=True, 
             always_visible=True,
         )
         plotter.render()
+
     plotter.enable_point_picking(callback=show_pick_label, show_message=False)
 
-    # Optional: label gens/loads too (comment out if cluttered)
+    # Optional: label gens/loads (comment out if cluttered)
     gen_pts, gen_labels = [], []
     load_pts, load_labels = [], []
     for n, d in G.nodes(data=True):
         if d.get("kind") == "gen":
-            gen_pts.append(list(pos[n])); gen_labels.append(d.get("name", "gen"))
+            gen_pts.append(list(pos[n]))
+            gen_labels.append(d.get("name", "gen"))
         elif d.get("kind") == "load":
-            load_pts.append(list(pos[n])); load_labels.append(d.get("name", "load"))
+            load_pts.append(list(pos[n]))
+            load_labels.append(d.get("name", "load"))
     if gen_pts:
-        plotter.add_point_labels(gen_pts, gen_labels, point_size=0, font_size=11, text_color="green", render=False)
+        plotter.add_point_labels(
+            gen_pts,
+            gen_labels,
+            point_size=0,
+            font_size=11,
+            text_color="green",
+            render=False,
+        )
     if load_pts:
-        plotter.add_point_labels(load_pts, load_labels, point_size=0, font_size=11, text_color="orange", render=False)
+        plotter.add_point_labels(
+            load_pts,
+            load_labels,
+            point_size=0,
+            font_size=11,
+            text_color="orange",
+            render=False,
+        )
+
+    # ---------- CURRENT COLORING + MANUAL “ANIMATION” ----------
+    if currents_df is not None and times is not None and len(times) > 0:
+        common_cols = [c for c in currents_df.columns if c in edge_actors]
+        if not common_cols:
+            print("[currents] No branch names in CSV matched edges in the graph.")
+        else:
+            currents_used = currents_df[common_cols]
+
+            vmin = float(currents_used.min().min())
+            vmax = float(currents_used.max().max())
+            if vmin == vmax:
+                vmin -= 1.0
+                vmax += 1.0
+
+            norm = colors.Normalize(vmin=vmin, vmax=vmax)
+            cmap = colormaps["viridis"]
+
+            n_steps = len(times)
+            current_idx = {"i": 0}
+
+            # text HUD (vtkCornerAnnotation: SetText(index, text))
+            time_text_actor = plotter.add_text(
+                f"time: {times.iloc[0]} (index 0/{n_steps - 1})",
+                font_size=10,
+                position="upper_left",
+            )
+
+            def apply_colors_for_index(idx):
+                idx = int(max(0, min(n_steps - 1, idx)))
+                current_idx["i"] = idx
+                row = currents_used.iloc[idx]
+
+                for col in common_cols:
+                    val = row[col]
+                    rgba = cmap(norm(val))
+                    r, g, b = rgba[:3]
+                    actor = edge_actors[col]
+                    actor.GetProperty().SetColor(float(r), float(g), float(b))
+
+                time_text_actor.SetText(
+                    0,
+                    f"time: {times.iloc[idx]} (index {idx}/{n_steps - 1})",
+                )
+                plotter.render()
+
+            # initialize at t=0
+            apply_colors_for_index(0)
+
+            # slider to scrub
+            def slider_callback(val):
+                apply_colors_for_index(int(val))
+
+            plotter.add_slider_widget(
+                slider_callback,
+                rng=[0, n_steps - 1],
+                value=0,
+                title="Time index",
+                pointa=(0.02, 0.08),
+                pointb=(0.4, 0.08),
+                style="modern",
+            )
+
+            # manual step forward with 'p'
+            def step_forward():
+                next_idx = (current_idx["i"] + 1) % n_steps
+                apply_colors_for_index(next_idx)
+
+            plotter.add_key_event("p", lambda: step_forward())
+
+            # hint text
+            plotter.add_text(
+                "Drag slider to scrub • Press 'p' to step forward",
+                font_size=10,
+                position="upper_right",
+            )
 
     # Camera/UI
     plotter.add_axes()
-    plotter.show_bounds(grid='front')
-    plotter.add_text("Press 'l' to toggle bus labels • Click to show a bus label", font_size=10)
+    plotter.show_bounds(grid="front")
+    plotter.add_text(
+        "Press 'l' to toggle bus labels • Click to show a bus label",
+        font_size=10,
+        position="lower_left",
+    )
     plotter.show()
 
 # --------- Fallback 2D ---------
 
-def render_network_matplotlib(G: nx.Graph, pos: dict):
+def render_network_matplotlib(G, pos):
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(10, 8))
     pos2d = {k: (v[0], v[1]) for k, v in pos.items()}
@@ -376,13 +564,19 @@ def render_network_matplotlib(G: nx.Graph, pos: dict):
     buses = [n for n, d in G.nodes(data=True) if d.get("kind") == "bus"]
     gens = [n for n, d in G.nodes(data=True) if d.get("kind") == "gen"]
     loads = [n for n, d in G.nodes(data=True) if d.get("kind") == "load"]
-    nx.draw_networkx_nodes(G, pos2d, nodelist=buses, node_size=20, node_color="white", edgecolors="black")
+    nx.draw_networkx_nodes(
+        G, pos2d, nodelist=buses, node_size=20, node_color="white", edgecolors="black"
+    )
     nx.draw_networkx_nodes(G, pos2d, nodelist=gens, node_size=12, node_color="green")
     nx.draw_networkx_nodes(G, pos2d, nodelist=loads, node_size=12, node_color="orange")
-    labels = {n: G.nodes[n].get("bus_name") or f"Bus {G.nodes[n]['bus_number']}" for n in buses}
+    labels = {
+        n: G.nodes[n].get("bus_name") or f"Bus {G.nodes[n]['bus_number']}"
+        for n in buses
+    }
     nx.draw_networkx_labels(G, pos2d, labels=labels, font_size=6)
     ax.set_title("WECC POC (EPSG:3857 layout) — 2D fallback")
-    ax.set_xticks([]); ax.set_yticks([])
+    ax.set_xticks([])
+    ax.set_yticks([])
     ax.set_aspect("equal", adjustable="box")
     plt.tight_layout()
     plt.show()
@@ -397,18 +591,22 @@ def main():
     G = build_graph(buses, branches, gens, loads)
     pos = compute_layout_positions(G, bbox_3857)
 
+    times, currents_df = load_branch_currents()
+
     print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     if _HAS_PYVISTA:
         render_network_pyvista(
-            G, pos, bbox_3857,
-            use_basemap=(USE_BASEMAP and _HAS_BASEMAP),
-            zoom=BASEMAP_ZOOM,
-            z_offset=BASEMAP_Z_OFFSET
+            G,
+            pos,
+            bbox_3857,
+            use_basemap=USE_BASEMAP,
+            times=times,
+            currents_df=currents_df,
         )
     else:
         print("PyVista not found; using 2D fallback view.")
         render_network_matplotlib(G, pos)
 
+
 if __name__ == "__main__":
     main()
-
