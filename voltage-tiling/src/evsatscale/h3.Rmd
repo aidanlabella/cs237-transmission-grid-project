@@ -1,0 +1,93 @@
+
+# EVs at Scale
+```{r}
+library(tidyverse)
+library(sf)
+library(h3jsr)
+# read in schools
+schools.df <- read.csv("evsatscale/schools.csv")
+# convert to shapefile
+schools.sf <- st_as_sf(schools.df, coords = c("Lon", "Lat"), crs = 4326)
+
+# get h3 id for each school
+schools.sf <- schools.sf %>% mutate(h3r6 = point_to_cell(geometry, res = 6, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r7 = point_to_cell(geometry, res = 7, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r8 = point_to_cell(geometry, res = 8, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r9 = point_to_cell(geometry, res = 9, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r10 = point_to_cell(geometry, res = 10, simple = TRUE))
+
+View(schools.sf)
+
+# export schools.sf as geojson
+write_sf(schools.sf, "evsatscale/schools_h3.geo.json", driver = "GeoJSON")
+
+# export schools.sf as json
+schools.sf.json <- toJSON(schools.sf)
+write(schools.sf.json, file="evsatscale/schools_h3.json")
+
+```
+
+```{r}
+# aggregate for each resolution
+schools.h3.r8 <- schools.sf %>% group_by(h3r8) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(),
+  res = 8
+) %>% rename(h3 = h3r8, voltage = avg)
+
+schools.h3.r9 <- schools.sf %>% group_by(h3r9) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(),
+  res = 9
+) %>% rename(h3 = h3r9, voltage = avg)
+
+schools.h3.r10 <- schools.sf %>% group_by(h3r10) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(),
+  res = 10
+) %>% rename(h3 = h3r10, voltage = avg)
+
+schools.h3.r11 <- schools.sf %>% group_by(h3r11) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(), 
+  res = 11
+) %>% rename(h3 = h3r11, voltage = avg)
+
+schools.h3.r12 <- schools.sf %>% group_by(h3r12) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(), 
+  res = 12
+) %>% rename(h3 = h3r12, voltage = avg)
+
+
+# combine schools.h3.r9 and schools.h3.r10 and schools.h3.r11
+schools.h3 <- rbind(schools.h3.r8, schools.h3.r9, schools.h3.r10, schools.h3.r11, schools.h3.r12)
+rm(schools.h3.r8, schools.h3.r9, schools.h3.r10, schools.h3.r11, schools.h3.r12)
+
+# update geometry
+schools.h3$geometry <- cell_to_polygon(schools.h3$h3)
+
+saveRDS(schools.h3, "evsatscale/schools_h3.rds")
+```
+
+```{r}
+schools.h3 <- readRDS("evsatscale/schools_h3.rds")
+
+# convert from a sf shapefile dataframe to regular df
+schools.h3.df <- st_drop_geometry(schools.h3)
+
+# drop the area columns from schools.h3
+# schools.h3.df <- subset(schools.h3.df, select = -c(area))
+
+
+schools.h3.json <- toJSON(schools.h3.df)
+
+# export as csv and json
+write(schools.h3.json, file="./exports_envc6/schools_h3_r10.json")
+# write.csv(schools.h3, "./exports/schools_h3.csv")
+```

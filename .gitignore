@@ -1,0 +1,20 @@
+# Environment directories (local installations)
+.conda/
+.julia_depot/
+.juliaup/
+.condarc
+
+# Micromamba
+micromamba*
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# R
+.Rhistory
+.RData
+
+# OS
+.DS_Store

@@ -1,0 +1,457 @@
+# Networked Contours
+
+## Load General Libraries
+```{r}
+library(tidyverse)
+library(sf)
+library(ggmap)
+library(tidygraph)
+library(igraph)
+```
+
+## Define Global Variables
+```{r}
+# define the path to the dss files
+dss_path <- "~/Documents/nrel/data/sfo/solar_extreme_batteries_high_timeseries"
+csv_path <- "~/Documents/nrel/data/sfo/solar_extreme_batteries_high_timeseries_csv"
+var_path <- "10x/variablesdss"
+regions <- list.dirs(csv_path, full.names = FALSE, recursive = FALSE)
+region <- "P13U"
+```
+
+## Define Function 
+```{r}
+convert_df_to_igraph <- function(csv_path, region) {
+  # read in RDS
+  lines.df <- readRDS(paste(csv_path, region, "lines_df.rds", sep = "/"))
+  buses.df <- readRDS(paste(csv_path, region, "buses_df.rds", sep = "/"))
+  tx.df <- readRDS(paste(csv_path, region, "tx_df.rds", sep = "/"))
+
+  # rename bus1 as "from" and bus2 to "to" in lines.df and tx.df
+  lines.df <- lines.df %>% rename(from = bus1, to = bus2, name = line)
+  tx.df <- tx.df %>% rename(from = bus1, to = bus2)
+  nodes.df <- buses.df %>% rename(name = bus)
+
+  # glimpse(nodes.df)
+  # glimpse(lines.df)
+  # glimpse(tx.df)
+
+  # combine
+  edges.df <- bind_rows(lines.df, tx.df)
+
+  # check for nodes in neither edge list
+  nodes.df %>% filter(!(name %in% edges.df$from | name %in% edges.df$to)) %>% nrow()
+
+  # filter out any nodes that are not in the edges "from" or "to"
+  nodes.df <- nodes.df %>%
+    filter(name %in% edges.df$from | name %in% edges.df$to)
+  # from 296286 to 296286 > none removed!!
+  # export
+  saveRDS(edges.df, paste(csv_path, region, "edges_df.rds", sep = "/"))
+  saveRDS(nodes.df, paste(csv_path, region, "nodes_df.rds", sep = "/"))
+
+  # ensure all edges have a node
+  graph <- tidygraph::tbl_graph(
+    nodes = nodes.df,
+    edges = tibble(edges.df),
+    directed = FALSE
+  )
+  # graph
+
+  # calculate components
+  graph <- graph %>%
+    activate(nodes) %>%
+    mutate(component = components(graph)$membership)
+
+  # add a column that counts the number of nodes in each component
+  graph <- graph %>%
+    group_by(component) %>%
+    mutate(n = n()) %>%
+    ungroup()
+
+  # show components with the most number of nodes
+  # graph %>% activate(nodes) %>% as_tibble() %>% count(component) %>% arrange(desc(n)) %>% nrow()
+  # graph %>% activate(nodes) %>% as_tibble() %>% count(component) %>% arrange(desc(n)) %>% head(10)
+  # Round 1: 1 component with 80,644 nodes, then everything else is less than 150 nodes per component
+  # Round 2: 1 component with 80,915 nodes, then everything else is less than 150 nodes per component
+
+  max_n <- max(graph %>% activate(nodes) %>% as_tibble() %>% count(component) %>% pull(n))
+  total_nodes <- nrow(nodes.df)
+  percent_connected <- max_n / total_nodes * 100
+  print(paste("Max value of n: ", max_n, "\nTotal Components: ", total_nodes, "\nPercent Connected: ", percent_connected))
+
+  # inspect things
+  # graph
+  # max(graph %>% activate(nodes) %>% as_tibble() %>% pull(component)) # 46k components, can't work with that
+
+  # # count unique values of number of nodes in each component
+  # graph %>% activate(nodes) %>% as_tibble() %>% count(component) %>% count(n)%>% print(n=50)
+
+  # # show me a histogram of the number of nodes in each component
+  # # use log scale
+  # graph %>% activate(nodes) %>% as_tibble() %>% count(component) %>% ggplot(aes(x = n)) + geom_histogram(binwidth = 1) + scale_y_log10()
+  return (graph)
+}
+```
+
+## Run the Function for All Regions
+```{r}
+for (region in regions) {
+  print(paste0("Processing region: ", region))
+  graph <- convert_df_to_igraph(csv_path, region)
+  saveRDS(graph, paste(csv_path, region, "graph.rds", sep = "/"))
+}
+```
+
+## Check for # Connected
+```{r}
+for (region in regions) {
+  graph <- readRDS(paste(csv_path, region, "graph.rds", sep = "/"))
+  max_n <- max(graph %>% activate(nodes) %>% as_tibble() %>% count(component) %>% pull(n))
+  total_nodes <- graph %>% activate(nodes) %>% as_tibble() %>% nrow()
+  percent_connected <- max_n / total_nodes * 100
+  print(paste("Region: ", region, "\nMax value of n: ", max_n, "\nTotal Nodes: ", total_nodes, "\nPercent Connected: ", percent_connected, sep = "\n"))
+}
+```
+
+      n buses/    n components w/
+      component   this many buses in it
+      <int>      <int>
+ 1        2       9188
+ 2        3       1527
+ 3        4       2528
+ 4        5       3115
+ 5        6       2845
+ 6        7       2337
+ 7        8       2268
+ 8        9       2110
+ 9       10       1938
+10       11       1498
+11       12       1330
+12       13        924
+13       14        771
+14       15        484
+15       16        332
+16       17        206
+17       18        131
+18       19         75
+19       20         37
+20       21         16
+21       22          7
+22       23          2
+23       24          2
+24       25          1
+25       27          1
+26       28          1
+27       51          1
+28       80          1
+29      148          1
+30    80915          1
+
+Region:  P10U    # Nodes in Largest Component: 13870    Total Nodes:  54612        Percent Connected in Largest Component:  25.39%
+Region:  P11U    # Nodes in Largest Component: 27010    Total Nodes:  116863       Percent Connected in Largest Component:  23.11%
+Region:  P12U    # Nodes in Largest Component: 13349    Total Nodes:  104759       Percent Connected in Largest Component:  12.74%
+Region:  P13U    # Nodes in Largest Component: 80915    Total Nodes:  296286       Percent Connected in Largest Component:  27.30%
+Region:  P14U    # Nodes in Largest Component: 35621    Total Nodes:  217458       Percent Connected in Largest Component:  16.38%
+Region:  P15U    # Nodes in Largest Component: 51057    Total Nodes:  231434       Percent Connected in Largest Component:  22.06%
+Region:  P16U    # Nodes in Largest Component: 39591    Total Nodes:  198827       Percent Connected in Largest Component:  19.91%
+Region:  P17U    # Nodes in Largest Component: 30210    Total Nodes:  175327       Percent Connected in Largest Component:  17.23%
+Region:  P18U    # Nodes in Largest Component: 13896    Total Nodes:  119713       Percent Connected in Largest Component:  11.60%
+Region:  P19U    # Nodes in Largest Component: 32298    Total Nodes:  152778       Percent Connected in Largest Component:  21.14%
+Region:  P1R     # Nodes in Largest Component: 2904     Total Nodes:  120334       Percent Connected in Largest Component:  2.41%
+Region:  P1U     # Nodes in Largest Component: 4937     Total Nodes:  18587        Percent Connected in Largest Component:  26.56%
+Region:  P20U    # Nodes in Largest Component: 56542    Total Nodes:  263694       Percent Connected in Largest Component:  21.44%
+Region:  P21U    # Nodes in Largest Component: 8399     Total Nodes:  75984        Percent Connected in Largest Component:  11.05%
+Region:  P22U    # Nodes in Largest Component: 33304    Total Nodes:  167789       Percent Connected in Largest Component:  19.84%
+Region:  P23U    # Nodes in Largest Component: 41867    Total Nodes:  203534       Percent Connected in Largest Component:  20.57%
+Region:  P24U    # Nodes in Largest Component: 8676     Total Nodes:  75602        Percent Connected in Largest Component:  11.47%
+Region:  P25U    # Nodes in Largest Component: 12229    Total Nodes:  111543       Percent Connected in Largest Component:  10.96%
+Region:  P26U    # Nodes in Largest Component: 35411    Total Nodes:  164027       Percent Connected in Largest Component:  21.58%
+Region:  P27U    # Nodes in Largest Component: 1975     Total Nodes:  16262        Percent Connected in Largest Component:  12.14%
+Region:  P28U    # Nodes in Largest Component: 6967     Total Nodes:  98654        Percent Connected in Largest Component:  7.06%
+Region:  P29U    # Nodes in Largest Component: 8362     Total Nodes:  40736        Percent Connected in Largest Component:  20.52%
+Region:  P2R     # Nodes in Largest Component: 8431     Total Nodes:  77115        Percent Connected in Largest Component:  10.93%
+Region:  P2U     # Nodes in Largest Component: 29047    Total Nodes:  98209        Percent Connected in Largest Component:  29.57%
+Region:  P30U    # Nodes in Largest Component: 42920    Total Nodes:  228418       Percent Connected in Largest Component:  18.79%
+Region:  P31U    # Nodes in Largest Component: 31521    Total Nodes:  184751       Percent Connected in Largest Component:  17.06%
+Region:  P32U    # Nodes in Largest Component: 30757    Total Nodes:  149454       Percent Connected in Largest Component:  20.57%
+Region:  P33U    # Nodes in Largest Component: 6281     Total Nodes:  34428        Percent Connected in Largest Component:  18.24%
+Region:  P34U    # Nodes in Largest Component: 9074     Total Nodes:  42163        Percent Connected in Largest Component:  21.52%
+Region:  P35U    # Nodes in Largest Component: 31       Total Nodes:  57           Percent Connected in Largest Component:  54.38%
+Region:  P3R     # Nodes in Largest Component: 1183     Total Nodes:  8620         Percent Connected in Largest Component:  13.72%
+Region:  P3U     # Nodes in Largest Component: 32283    Total Nodes:  171029       Percent Connected in Largest Component:  18.87%
+Region:  P4R     # Nodes in Largest Component: 297      Total Nodes:  2732         Percent Connected in Largest Component:  10.87%
+Region:  P4U     # Nodes in Largest Component: 87       Total Nodes:  182          Percent Connected in Largest Component:  47.80%
+Region:  P5R     # Nodes in Largest Component: 422      Total Nodes:  1235         Percent Connected in Largest Component:  34.17%
+Region:  P5U     # Nodes in Largest Component: 36171    Total Nodes:  348251       Percent Connected in Largest Component:  10.38%
+Region:  P6U     # Nodes in Largest Component: 8840     Total Nodes:  82974        Percent Connected in Largest Component:  10.65%
+Region:  P7U     # Nodes in Largest Component: 10075    Total Nodes:  86719        Percent Connected in Largest Component:  11.61%
+Region:  P8U     # Nodes in Largest Component: 22976    Total Nodes:  111000       Percent Connected in Largest Component:  20.69%
+Region:  P9U     # Nodes in Largest Component: 42782    Total Nodes:  284317       Percent Connected in Largest Component:  15.04%
+
+## Join with Buses.SF and Plot
+```{r}
+nodes.df <- readRDS(paste(csv_path, region, "nodes_df.rds", sep = "/"))
+graph <- readRDS(paste(csv_path, region, "graph.rds", sep = "/"))
+
+# add the "component" and "n" columns to nodes.df
+nodes.df <- nodes.df %>%
+  left_join(graph %>% activate(nodes) %>% as_tibble() %>% select(name, component, n), by = c("name" = "name"))
+
+glimpse(nodes.df)
+write.csv(nodes.df, paste(csv_path, region, "nodes_w_comp_df.csv", sep = "/"))
+
+# keep just buses where n > 1
+nodes.df.filt <- nodes.df %>%
+  filter(n > 1000)
+
+
+# plot the buses
+component_plot <- nodes.df.filt %>%
+  ggplot() +
+  geom_sf(aes(color = as.factor(component)), size = 0.5) +
+  theme_bw() 
+  # theme(legend.position = "none")
+
+ggsave(
+  filename = "10x/figures/component_plot_2.png", 
+  component_plot,
+  width = 12960,
+  height = 12960,
+  dpi = 300,
+  units = "px",
+  device = "png",
+  limitsize = FALSE
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+## Force Directed Network Layout FR
+```{r}
+# library(igraph) # for network analysis
+# # read in graph
+# graph <- readRDS(paste(csv_path, region, "graph.rds", sep = "/"))
+
+# # create force directed layout
+# fr <- as.data.frame(layout_with_fr(graph, dim = 2))
+# ggplot(fr, aes(x = V1, y = V2)) +
+#   geom_point(alpha = 0.2, size = 0.5) +
+#   theme_bw()
+```
+
+## Run Network Analysis
+```{r}
+library(igraph) # for network analysis
+# read in graph and inspect
+graph <- readRDS(paste(csv_path, region, "graph.rds", sep = "/"))
+graph
+##############################################
+# calculate the distances between all nodes
+dist_matrix <- distances(graph, mode = "all")
+##############################################
+# calculate a similarity matrix as 1 / (h+1)^2
+sim2_matrix <- 1 / ((dist_matrix + 1)^2)
+
+##############################################
+# export matrices
+saveRDS(dist_matrix, "10x/variablesdss/dist_matrix.rds")
+saveRDS(sim2_matrix, "10x/variablesdss/sim2_matrix.rds")
+
+# remove variables from RAM until needed
+rm(dist_matrix, sim2_matrix)
+```
+
+## Proceed with Weighted Network Analysis
+```{r}
+# import buses.sf
+buses.sf <- readRDS("10x/variablesdss/buses_sf.rds")
+sim2_matrix <- readRDS("10x/variablesdss/sim2_matrix.rds")
+
+# set up a function to calculate weighted voltage considering n nearest neighbors by hops (including self)
+neighbors <- 3
+
+# function to weight voltage
+weight_voltage <- function(voltage, row) {
+  weights <- sim2_matrix[, row]
+  indices <- order(weights, decreasing = TRUE)[1:neighbors]
+  vw <- data.frame(
+    voltages = buses.sf$voltage[indices],
+    weights = weights[indices]
+  )
+  vw$weighted_voltage <- vw$voltages * vw$weights
+  sum_weights <- sum(vw$weights)
+  vw$scaled_weighted_voltage <- vw$weighted_voltage / sum_weights
+  weighted_voltage <- sum(vw$scaled_weighted_voltage)
+  return(weighted_voltage)
+}
+##############################################
+# Apply weighted voltage function to buses.sf
+Sys.time()
+buses.sf <- buses.sf %>% mutate(
+  weighted_voltage_n3_d2 = purrr::map_dbl(
+    row_number(),
+    ~ weight_voltage(voltage, .x)
+  )
+)
+Sys.time()
+
+# filter out any columns that contain "_dev_"
+# buses.sf <- buses.sf %>% select(-contains("_dev_"))
+
+# sort the columns by name
+# buses.sf <- buses.sf %>% select(sort(names(.)))
+
+# reexport buses.sf
+saveRDS(buses.sf, "10x/variablesdss/buses_sf.rds")
+```
+
+
+
+# Create Contours
+
+## Load Contour Map Libraries
+```{r}
+library(terra)
+library(gstat)
+```
+
+## Create Contours
+```{r}
+# load in lines buffer
+buses.sf <- readRDS("10x/variablesdss/buses_sf.rds")
+lines.buffer <- readRDS("10x/variablesdss/lines_buffer_100m.rds")
+
+# Convert the lines buffer to a vector
+lines.buffer.sv <- vect(lines.buffer)
+# get the extent of lines.buffer.sv
+ext <- ext(lines.buffer.sv)
+# create a grid of the same extent
+grd <- rast(ext, res=0.0001)
+
+# convert buses.sf to buses.df
+buses.df <- buses.sf %>% st_drop_geometry()
+# drop nas from any column
+buses.df <- na.omit(buses.df)
+# rename lng and lat to x and y
+names(buses.df) <- c("name", "voltage", "x", "y")
+# glimpse(buses.df)
+
+neighbors <- 1000
+# define interpolation model
+mg <- gstat(
+  id = "idw", 
+  formula = voltage~1, 
+  locations = ~x+y, 
+  data=buses.df, 
+  nmax=neighbors, 
+  set=list(idp = 2)
+)
+######################
+contour <- interpolate(grd, mg, debug.level=0, index=1)
+saveRDS(contour, "10x/variablesdss/contour_n1000_rast.rds")
+######################
+# plot(contour)
+contour.mask <- mask(contour, lines.buffer.sv)
+saveRDS(contour.mask, "10x/variablesdss/contour_mask_n1000_rast.rds")
+# plot(contour.mask)
+
+# export the contour to RDS
+# class(contour) # [1] "SpatRaster", attr(,"package"), [1] "terra"
+
+# clear out extra variables not needed later
+rm(buses.sf, buses.df, lines.buffer, lines.buffer.sv, ext, grd, neighbors, mg)
+```
+
+## Prepare Contour for Plotting
+```{r}
+# read in contour object
+contour.mask <- readRDS("10x/variablesdss/contour_mask_n1000_rast.rds")
+
+# convert to data.frame
+contour.df <- as.data.frame(contour, xy=TRUE)
+
+# rename idw.pred to voltage
+contour.df <- contour.df %>% rename(voltage = idw.pred)
+
+# remove rows with NA in any column
+# contour.df <- na.omit(contour.df) # removes none
+
+# export df 
+saveRDS(contour.df, "10x/variablesdss/contour_n1000_df.rds")
+glimpse(contour.df)
+
+rm(contour)
+```
+Rows: 3,553,912
+Columns: 3
+$ x        <dbl> -122.3447, -122.3446, -122.3445, -122.3444, -122.3443, -122.3…
+$ y        <dbl> 37.90743, 37.90743, 37.90743, 37.90743, 37.90743, 37.90743, 3…
+$ voltage <dbl> 0.9800596, 0.9800594, 0.9800592, 0.9800590, 0.9800588, 0.9800…
+
+## Plot Contours
+```{r}
+# import map
+map <- readRDS("10x/variablesdss/map_stadia_z14.rds")
+contour.df <- readRDS("10x/variablesdss/contour_n1000_df.rds")
+
+# glimpse(contour.df)
+# plot it
+contour_plot <- ggmap(map) +
+  geom_raster(
+    data = contour.df,
+    aes(x=x, y=y, fill = voltage),
+    alpha = 1.0,
+    inherit.aes = FALSE
+  ) +
+#   geom_sf(
+#     data = lines.sf, 
+#     color="black", 
+#     alpha = 0.05, 
+#     inherit.aes = FALSE
+#   ) +
+  scale_fill_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "darkred",
+    midpoint = 1,
+    limits = c(0.95, 1.05),
+    space = "Lab",
+    guide = "colourbar",
+    aesthetics = "fill",
+    oob = scales::squish
+  ) +
+  theme(
+    legend.position = c(0.96, 0.15),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(family = "Serif", size = 18)
+  ) +
+  coord_sf(xlim = c(left, right), ylim = c(bottom, top)
+)
+
+ggsave(
+  filename = "10x/figures/contour_plot_n1000.png", 
+  contour_plot,
+  width = 6480,
+  height = 6480,
+  dpi = 300,
+  units = "px",
+  device = "png",
+  limitsize = FALSE
+)
+
+rm(contour_plot)
+```

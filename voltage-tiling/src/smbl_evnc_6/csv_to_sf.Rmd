@@ -1,0 +1,242 @@
+# Parse the Data from ENVC_6 that is in CSV format
+
+## Load Libraries
+```{r}
+# load needed libraries
+library(sf)
+library(tidyverse)
+```
+
+## Read in the Data
+```{r}
+buses.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/buses.csv", header = TRUE, sep = ",")
+bus.voltages.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/bus_voltages.csv", header = TRUE, sep = ",")
+bus.metadata.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/bus_metadata.csv", header = TRUE, sep = ",")
+
+lines.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/lines.csv", header = TRUE, sep = ",")
+line.current.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/line_current.csv", header = TRUE, sep = ",")
+line.current.limits.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/line_current_limits.csv", header = TRUE, sep = ",")
+
+ev.metadata.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/ev_metadata.csv", header = TRUE, sep = ",")
+
+battery.power.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/battery_power.csv", header = TRUE, sep = ",")
+
+loads.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/loads.csv", header = TRUE, sep = ",")
+pv.load.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/pv_load.csv", header = TRUE, sep = ",")
+```
+
+
+## Buses
+```{r}
+# load libraries
+library(sf)
+library(tidyverse)
+
+buses.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/buses.csv", header = TRUE, sep = ",")
+bus.voltages.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/bus_voltages.csv", header = TRUE, sep = ",")
+
+# rename bus_name to bus
+buses.df <- buses.df %>% rename(bus = bus_name)
+buses.sf <- st_as_sf(buses.df, coords = c("long", "lat"), crs = 4326)
+
+# extract the time steps from the bus.voltages.df first column of bus.voltages.df
+time.steps <- bus.voltages.df[1]
+# remove the first time column from the bus.voltages.df
+bus.voltages.df <- bus.voltages.df %>% select(-1)
+
+# extract the column names from the bus.voltages.df into a data frame with 1 column
+bus.voltage.names <- data.frame(colnames(bus.voltages.df))
+
+# filter out buses that are not in the bus.voltages.df.names
+buses.sf <- buses.sf %>% filter(bus %in% colnames(bus.voltages.df))
+
+# filter out bus.voltage columns that are not in the buses.sf$bus
+bus.voltages.df <- bus.voltages.df %>% select(buses.sf$bus)
+
+# add in the first row of bus.voltages.df to the buses.sf$voltage
+buses.sf$voltage <- t(bus.voltages.df[1,])
+
+# export bus.voltages.df as csv
+write.csv(bus.voltages.df, "./exports_envc6/bus_voltages.csv", row.names = FALSE)
+
+# export timesteps
+write.csv(time.steps, "./exports_envc6/time_steps.csv", row.names = FALSE)
+
+# export buses.sf as geojson
+st_write(buses.sf, "./exports_envc6/buses.geo.json", driver = "GeoJSON")
+saveRDS(buses.sf, "./exports_envc6/buses_sf.rds")
+
+# clean big vars
+rm(bus.voltages.df, bus.voltage.names)
+```
+
+## Lines
+```{r}
+# read in lines data
+buses.sf <- readRDS("./exports_envc6/buses_sf.rds")
+lines.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/lines.csv", header = TRUE, sep = ",")
+line.current.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/line_current.csv", header = TRUE, sep = ",")
+head(lines.df)
+# rename line_name to line
+lines.df <- lines.df %>% rename(line = line_name)
+# rename from_bus to bus1 and to_bus to bus2
+lines.df <- lines.df %>% rename(bus1 = from_bus, bus2 = to_bus)
+
+# merge the lines.df with the buses.df by bus1
+lines.df <- merge(lines.df, buses.df, by.x = "bus1", by.y = "bus")
+# drop voltage, rename lng to lng1, and lat to lat1
+lines.df <- lines.df %>% rename(lng1 = long, lat1 = lat)
+
+# merge the lines.df with the buses.df by bus2
+lines.df <- merge(lines.df, buses.df, by.x = "bus2", by.y = "bus")
+# drop voltage, rename lng to lng2, and lat to lat2
+lines.df <- lines.df %>% rename(lng2 = long, lat2 = lat)
+
+# rename bus1 to from and bus2 to to
+lines.df <- lines.df %>% rename(from = bus1, to = bus2)
+
+linestrings <- apply(lines.df, 1, function(x) 
+  {
+    v <- as.numeric(x[c("lng1","lng2","lat1","lat2")])
+    m <- matrix(v, nrow = 2)
+    return(st_sfc(st_linestring(m), crs = 4326))
+  }
+)
+
+##############################################
+linestrings = Reduce(c, linestrings)
+lines.df$geometry <- linestrings
+
+# clean up
+rm(linestrings)
+lines.df <- lines.df %>% select(-lat1, -lat2, -lng1, -lng2)
+
+# convert lines.df to a sf object
+lines.sf <- st_as_sf(lines.df, crs = 4326)
+
+# check if any two lines share the same geometry -- 19 do, whatever
+# lines.sf.2 <- lines.sf %>% distinct(geometry, .keep_all = TRUE)
+
+# remove the first time column from the line.current.df
+line.current.df <- line.current.df %>% select(-1)
+
+# extract the column names from the line.current.df into a data frame with 1 column
+line.current.names <- data.frame(colnames(line.current.df))
+
+# filter out lines that are not in the line.current.df.names
+lines.sf <- lines.sf %>% filter(line %in% colnames(line.current.df))
+
+# filter out line.current.columns that are not in the lines.sf$bus
+line.current.df <- line.current.df %>% select(lines.sf$bus)
+
+# add in the first row of line.current.df to the lines.sf$current
+lines.sf$current <- t(line.current.df[1,])
+
+## read in line_current_limits.csv
+line.current.limits.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/line_current_limits.csv", header = TRUE, sep = ",")
+
+
+# export lines.sf as geojson
+st_write(lines.sf, "./exports_envc6/lines.geo.json", driver = "GeoJSON")
+
+
+# export files
+saveRDS(lines.sf, "./exports_envc6/lines_sf.rds")
+```
+## Add Capacity and Current to Lines
+```{r}
+
+```
+
+## Bus metadata
+```{r}
+# read in bus_metadata.csv
+bus.metadata.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/bus_metadata.csv", header = TRUE, sep = ",")
+# read in buses.sf
+buses.sf <- readRDS("./exports_envc6/buses_sf.rds")
+
+# filter out buses that are not in the bus.metadata.df.names
+# buses.sf <- buses.sf %>% filter(bus %in% bus.metadata.df$bus)
+
+# join the bus.metadata.df with the buses.sf
+buses.sf <- merge(buses.sf, bus.metadata.df, by.x = "bus", by.y = "bus_name")
+
+# rename buses.sf to buses.metadata.sf
+buses.metadata.sf <- buses.sf
+
+# export buses.metadata.sf as RDS
+saveRDS(buses.metadata.sf, "./exports_envc6/buses_metadata_sf.rds")
+```
+
+## Transformers
+In bus_metadata.csv
+```{r}
+# read in bus.metadata.sf
+buses.metadata.sf <- readRDS("./exports_envc6/buses_metadata_sf.rds")
+
+# filter out buses that are not transformers
+tx.sf <- buses.metadata.sf %>% filter(has_transformer != "")
+
+# drop has_pv, has_ev, has_storage columns
+tx.sf <- tx.sf %>% select(-has_pv, -has_ev, -has_storage)
+
+# export to rds
+saveRDS(tx.sf, "./exports_envc6/tx_sf.rds")
+```
+
+## EV Stations
+Also in bus_metadata.csv
+```{r}
+# read in bus.metadata.sf
+buses.metadata.sf <- readRDS("./exports_envc6/buses_metadata_sf.rds")
+
+# filter out buses that are not evs
+ev.sf <- buses.metadata.sf %>% filter(has_ev != "")
+
+# read in ev.metadata.df
+ev.metadata.df <- read.csv("~/Documents/nrel/data/smbl_evnc_6_p13uhs13/ev_metadata.csv", header = TRUE, sep = ",")
+
+# join the ev.sf with the ev.metadata.df
+ev.sf <- merge(ev.sf, ev.metadata.df, by.x = "bus", by.y = "high_bus")
+
+# drop has_pv, has_ev, has_storage columns
+ev.sf <- ev.sf %>% select(-has_pv, -has_transformer, -has_storage)
+
+# drop voltage and has_ev columns
+ev.sf <- ev.sf %>% select(-voltage, -has_ev)
+
+# export to rds
+saveRDS(ev.sf, "./exports_envc6/ev_sf.rds")
+```
+
+## PV
+```{r}  
+# read in bus.metadata.sf
+buses.metadata.sf <- readRDS("./exports_envc6/buses_metadata_sf.rds")
+
+# filter out buses that are not pvs
+pv.sf <- buses.metadata.sf %>% filter(has_pv != "")
+
+# drop has_pv, has_ev, has_storage columns
+pv.sf <- pv.sf %>% select(-has_transformer, -has_ev, -has_storage)
+pv.sf <- pv.sf %>% select(-voltage)
+# export to rds
+saveRDS(pv.sf, "./exports_envc6/pv_sf.rds")
+
+```
+
+## Storage
+Also in bus_metadata.csv
+```{r}
+# read in bus.metadata.sf
+buses.metadata.sf <- readRDS("./exports_envc6/buses_metadata_sf.rds")
+
+# filter out buses that are not pvs
+storage.sf <- buses.metadata.sf %>% filter(has_storage != "")
+
+# drop has_storage, has_ev, has_pv columns
+storage.sf <- storage.sf %>% select(-has_transformer, -has_ev, -has_pv)
+storage.sf <- storage.sf %>% select(-voltage)
+# export to rds
+saveRDS(storage.sf, "./exports_envc6/storage_sf.rds")
+```

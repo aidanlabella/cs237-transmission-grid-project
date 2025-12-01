@@ -1,0 +1,169 @@
+
+# Convert to Spatial Data & Visualize
+
+```{r}
+library(dplyr)
+library(sf)
+```
+
+## Convert Buses to Spatial Data Frames
+```{r}
+# read in buses and lines.df
+buses.df <- readRDS("./exports/buses_df.rds")
+
+# convert buses.df to a sf object
+buses.sf <- st_as_sf(buses.df, coords = c("lng", "lat"), crs = 4326)
+
+# check of any of the buses share the same geometry -- none do
+buses.sf %>% group_by(geometry) %>% summarise(n = n()) %>% filter(n > 1)
+
+# export buses sf as RDS
+saveRDS(buses.sf, "./exports/buses_sf.rds")
+```
+
+## Convert Lines and Transformers jointly to Spatial Data Frame
+```{r}
+# read in lines and transformers
+lines.df <- readRDS("./exports/lines_df.rds")
+tx.df <- readRDS("./exports/tx_df.rds")
+
+# merge into one single df
+lines.df <- rbind(lines.df, tx.df)
+rm(tx.df)
+
+# merge the lines.df with the buses.df by bus1
+lines.df <- merge(lines.df, buses.df, by.x = "bus1", by.y = "bus")
+# drop voltage, rename lng to lng1, and lat to lat1
+lines.df <- lines.df %>% select(-voltage) %>% rename(lng1 = lng, lat1 = lat)
+
+# merge the lines.df with the buses.df by bus2
+lines.df <- merge(lines.df, buses.df, by.x = "bus2", by.y = "bus")
+# drop voltage, rename lng to lng2, and lat to lat2
+lines.df <- lines.df %>% select(-voltage) %>% rename(lng2 = lng, lat2 = lat)
+
+# rename bus1 to from and bus2 to to
+lines.df <- lines.df %>% rename(from = bus1, to = bus2)
+
+linestrings <- apply(lines.df, 1, function(x) 
+  {
+    v <- as.numeric(x[c("lng1","lng2","lat1","lat2")])
+    m <- matrix(v, nrow = 2)
+    return(st_sfc(st_linestring(m), crs = 4326))
+  }
+)
+
+##############################################
+linestrings = Reduce(c, linestrings)
+lines.df$geometry <- linestrings
+
+# clean up
+rm(linestrings)
+lines.df <- lines.df %>% select(-lat1, -lat2, -lng1, -lng2)
+
+# convert lines.df to a sf object
+lines.sf <- st_as_sf(lines.df, crs = 4326)
+
+# check if any two lines share the same geometry -- 19 do, whatever
+# lines.sf.2 <- lines.sf %>% distinct(geometry, .keep_all = TRUE)
+ 
+# export files
+saveRDS(lines.sf, "./exports/lines_sf.rds")
+```
+
+## Create Separate SF for Lines
+```{r}
+# read in lines
+lines.df <- readRDS("./exports/lines_df.rds")
+buses.df <- readRDS("./exports/buses_df.rds")
+
+# merge the lines.df with the buses.df by bus1
+lines.df <- merge(lines.df, buses.df, by.x = "bus1", by.y = "bus")
+# drop voltage, rename lng to lng1, and lat to lat1
+lines.df <- lines.df %>% select(-voltage, -dev) %>% rename(lng1 = lng, lat1 = lat)
+
+# merge the lines.df with the buses.df by bus2
+lines.df <- merge(lines.df, buses.df, by.x = "bus2", by.y = "bus")
+# drop voltage, rename lng to lng2, and lat to lat2
+lines.df <- lines.df %>% select(-voltage, -dev) %>% rename(lng2 = lng, lat2 = lat)
+
+# rename bus1 to from and bus2 to to
+lines.df <- lines.df %>% rename(from = bus1, to = bus2)
+
+linestrings <- apply(lines.df, 1, function(x) 
+  {
+    v <- as.numeric(x[c("lng1","lng2","lat1","lat2")])
+    m <- matrix(v, nrow = 2)
+    return(st_sfc(st_linestring(m), crs = 4326))
+  }
+)
+
+##############################################
+linestrings = Reduce(c, linestrings)
+lines.df$geometry <- linestrings
+
+# clean up
+rm(linestrings)
+lines.df <- lines.df %>% select(-lat1, -lat2, -lng1, -lng2)
+
+# convert lines.df to a sf object
+lines.sf <- st_as_sf(lines.df, crs = 4326)
+
+# check if any two lines share the same geometry -- 19 do, whatever
+# lines.sf.2 <- lines.sf %>% distinct(geometry, .keep_all = TRUE)
+ 
+# export files
+saveRDS(lines.sf, "./exports/lines_only_sf.rds")
+```
+
+
+## Create Separate SF for Transformers
+```{r}
+# read in tx
+tx.df <- readRDS("./exports/tx_only_df.rds")
+buses.df <- readRDS("./exports/buses_df.rds")
+
+# merge the tx.df with the buses.df by bus1
+tx.df <- merge(tx.df, buses.df, by.x = "bus1", by.y = "bus")
+# drop voltage, rename lng to lng1, and lat to lat1
+tx.df <- tx.df %>% select(-voltage, -dev) %>% rename(lng1 = lng, lat1 = lat)
+
+# merge the tx.df with the buses.df by bus2
+tx.df <- merge(tx.df, buses.df, by.x = "bus2", by.y = "bus")
+# drop voltage, rename lng to lng2, and lat to lat2
+tx.df <- tx.df %>% select(-voltage, -dev) %>% rename(lng2 = lng, lat2 = lat)
+
+# rename bus1 to from and bus2 to to
+tx.df <- tx.df %>% rename(from = bus1, to = bus2)
+
+txstrings <- apply(tx.df, 1, function(x) 
+  {
+    v <- as.numeric(x[c("lng1","lng2","lat1","lat2")])
+    m <- matrix(v, nrow = 2)
+    return(st_sfc(st_linestring(m), crs = 4326))
+  }
+)
+
+##############################################
+txstrings = Reduce(c, txstrings)
+tx.df$geometry <- txstrings
+
+# clean up
+rm(txstrings)
+tx.df <- tx.df %>% select(-lat1, -lat2, -lng1, -lng2)
+
+# convert tx.df to a sf object
+tx.sf <- st_as_sf(tx.df, crs = 4326)
+
+# check if any two tx share the same geometry -- 19 do, whatever
+# tx.sf.2 <- tx.sf %>% distinct(geometry, .keep_all = TRUE)
+
+# export files
+View(tx.sf)
+saveRDS(tx.sf, "./exports/tx_only_sf.rds")
+```
+
+# Convert PV Systems
+
+# Convert Storage
+
+# Convert Loads

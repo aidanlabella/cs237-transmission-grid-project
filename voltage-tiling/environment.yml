@@ -1,0 +1,41 @@
+name: voltage-tiling
+channels:
+  - conda-forge
+dependencies:
+  # Python bits (for S3 download notebooks)
+  - python=3.11
+  - boto3
+  - jupyterlab
+
+  # R stack for the RMarkdown workflows
+  - r-base=4.3
+  - r-tidyverse
+  - r-sf
+  - r-terra
+  - r-raster
+  - r-s2
+  - r-sp
+  - r-stringr
+  - r-dplyr
+  - r-jsonlite
+  - r-ggmap
+  - r-gstat
+  - r-concaveman
+  - r-moments
+  - r-igraph
+  - r-tidygraph
+  - r-units
+  - r-devtools
+  - r-remotes
+
+  # System libs commonly required by the geo stack
+  - gdal
+  - geos
+  - proj
+  - libspatialindex
+  - libgdal
+  - libcurl
+  - openssl
+  - libxml2
+  - make
+  - pkg-config

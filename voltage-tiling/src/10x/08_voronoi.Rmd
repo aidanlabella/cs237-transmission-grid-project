@@ -1,0 +1,240 @@
+
+# Voronoi
+```{r}
+library(tidyverse)
+library(sf)
+library(ggmap)
+library(terra)
+```
+
+## Read in Data
+```{r}
+# read in RDS
+lines.sf <- readRDS("data/10x/lines_sf.rds")
+buses.sf <- readRDS("data/10x/buses_sf.rds")
+map <- readRDS("data/10x/map_stadia_z14.rds")
+
+# get the bounding box of map
+left <- attr(map, "bb")$ll.lon
+right <- attr(map, "bb")$ur.lon
+bottom <- attr(map, "bb")$ll.lat
+top <- attr(map, "bb")$ur.lat
+```
+
+## Load Voronoi Libraries
+```{r}
+library(terra) # for creating voronoi polygons
+library(units) # for manipulating geometry of voronoi
+# library(ggvoronoi) # for creating voronoi polygons
+```
+
+## Create Voronoi Tesselations
+```{r}
+# read in buses.sv
+buses.sv <- readRDS("data/10x/buses_vec.rds")
+
+############################################################
+# create voronoi tesselation SpatialPolygon
+voronoi.sv <- terra::voronoi(
+  x = buses.sv, # SpatVector
+  # bnd = bus.concave.c2.sv, # SpatVector to set the outer boundary of the voronoi diagram
+  tolerance = 0, # numeric >= 0, snapping tolerance (0 is no snapping)
+  as.lines = FALSE, # logical. If TRUE, lines are returned without the outer boundary
+  deldir = FALSE # logical. If TRUE, the deldir is used instead of the GEOS C++ library method. It has been reported that deldir does not choke on very large data sets
+)
+############################################################
+
+# export
+saveRDS(voronoi.sv, "data/10x/voronoi_sv.rds")
+
+plot(voronoi.sv)
+```
+
+## Mask Voronoi and Convert to SF
+```{r}
+# read in voronoi.sv
+boundary.sv <- readRDS("data/10x/buses_concave_c2_sv.rds")
+voronoi.sv <- readRDS("data/10x/voronoi_sv.rds")
+
+# mask
+voronoi.mask <- intersect(voronoi.sv, boundary.sv)
+# export plot of voronoi mask to png
+# plot(voronoi.mask)
+# png(filename = "10x/figures/voronoi_shell_mask.png", width = 6480, height = 6480, units = "px", res = 300)
+
+# convert voronoi SpatialPolygon to a shapefile
+voronoi.sf <- sf::st_as_sf(voronoi.mask)
+
+# set projection of sf to ESPG:4326
+voronoi.sf <- sf::st_set_crs(voronoi.sf, 4326)
+
+# reexport voronoi.sf
+saveRDS(voronoi.sf, "data/10x/voronoi_sf.rds")
+
+# calculate the area of each polygon in voronoi.sf into a column area
+# voronoi.sf <- voronoi.sf %>% mutate(area = drop_units(st_area(geometry)))
+
+# create a new column voltage.rounded that rounds voltage to the nearest 0.001
+# voronoi.sf <- voronoi.sf %>% mutate(voltage.rounded = round(voltage, 3))
+```
+
+## Plot Voronoi
+```{r}
+# read in voronoi.sf
+voronoi.sf <- readRDS("data/10x/voronoi_sf.rds")
+
+# plot it
+voronoi_plot <- ggmap(map) +
+  geom_sf(
+    data = voronoi.sf, 
+    aes(fill = voltage, color = voltage),
+    alpha = 1.0,
+    inherit.aes = FALSE
+  ) +
+  geom_sf(
+    data = lines.sf, 
+    color="black", 
+    alpha = 0.2, 
+    inherit.aes = FALSE
+  ) +
+  scale_fill_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "darkred",
+    midpoint = 1,
+    limits = c(0.95, 1.05),
+    space = "Lab",
+    guide = "colourbar",
+    aesthetics = "fill",
+    oob = scales::squish
+  ) +
+  scale_color_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "darkred",
+    midpoint = 1,
+    limits = c(0.95, 1.05),
+    space = "Labx",
+    guide = "colourbar",
+    aesthetics = "color",
+    oob = scales::squish
+  ) +
+  theme(
+    legend.position = c(0.96, 0.15),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    text = element_text(family = "Serif", size = 18)
+  ) +
+  coord_sf(xlim = c(left, right), ylim = c(bottom, top))
+
+ggsave(
+  filename = "10x/figures/voronoi_plot_mask_w_lines.png", 
+  voronoi_plot,
+  width = 6480,
+  height = 6480,
+  dpi = 300,
+  units = "px",
+  device = "png",
+  limitsize = FALSE
+)
+```
+
+########################################################
+########################################################
+########################################################
+########################################################
+########################################################
+########################################################
+########################################################
+
+## Distribution Plot V2 for Voronoi
+```{r}
+# read in data
+buses.sf <- readRDS("data/10x/buses_sf.rds")
+voronoi.sf <- readRDS("data/10x/voronoi_sf.rds")
+
+# plot distribution of voltages against normal voltages
+ggplot() +
+  geom_density(
+    data = buses.sf,
+    aes(x = voltage, fill = "Actual"),
+    color = "forestgreen",
+    alpha = 0.15,
+    adjust = 3,
+    size = 1.5
+  ) +
+  geom_density(
+    data = voronoi.sf,
+    aes(x = sample_voltage, fill = "Plotted"),
+    color = "#cbad03",
+    alpha = 0.35,
+    adjust = 3,
+    size = 1.5
+  ) +
+  xlim(0.995, 1.04) +
+  scale_fill_manual(
+    name = element_blank(),
+    values = c("Actual" = "forestgreen", "Plotted" = "gold")
+  ) +
+  labs(
+    x = "Voltage [p.u.]",
+    y = "Density"
+  ) +
+  theme(
+    legend.position = c(0.9, 0.5),
+    legend.background = element_rect(fill = "transparent"),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.background = element_blank(),
+    text = element_text(family = "Serif", size = 24)
+  )
+```
+
+## Computate Summary Statistics
+```{r}
+voronoi.sf <- readRDS("data/10x/voronoi_sf.rds")
+
+voronoi.sf$weightedarea <- voronoi.sf$area / sum(voronoi.sf$area)
+# voronoi.sf$areavoltage <- voronoi.sf$area * voronoi.sf$voltage
+# voronoi.sf$voltage.area.weighted <- voronoi.sf$areavoltage / mean(voronoi.sf$area)
+nrow(voronoi.sf)
+set.seed(44)
+voltage_sample_voronoi <- sample(voronoi.sf$voltage, size = 10*nrow(voronoi.sf), replace = TRUE, prob = voronoi.sf$weightedarea)
+
+# stats
+(median(voltage_sample_voronoi))
+(ks.test(buses.sf$voltage, voltage_sample_voronoi))
+(IQR(voltage_sample_voronoi))
+(var(voltage_sample_voronoi))
+(sd(voltage_sample_voronoi))
+(min(voltage_sample_voronoi))
+(max(voltage_sample_voronoi))
+(kurtosis(voltage_sample_voronoi))
+
+# visuals
+boxplot(voltage_sample_voronoi)
+hist(voltage_sample_voronoi)
+```
+
+## Vioplot for Voronoi
+```{r}
+# violin plot
+library(vioplot)
+
+par(family = "serif", cex = 1.2)
+vioplot(buses.sf$voltage, ylim=c(0.94,1.07), side="left", at=0.97, xaxt='n', yaxt='n', horizontal = TRUE, col = "#929cfc")
+vioplot(voltage_sample_voronoi, ylim=c(0.94,1.07), side="right", at=1.03, add=TRUE, horizontal = TRUE, col = "#fda99c")
+title(xlab = "Voltage [p.u.]")
+axis(1, at=c(0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07))
+axis(2, at=c(0.75, 1.25), tick=FALSE, labels = c("Actual", "| Visualized"))
+abline(v=1.05, lty=2)
+abline(v=.95, lty=2)
+# abline(h=1, lty=1)
+```
+
+## To Do
+- Regenerate the vornoi polygons with the border

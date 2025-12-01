@@ -1,0 +1,108 @@
+# Process Data from CSV to GeoJSON
+
+```{r}
+# Read in CSV file
+df <- read.csv("evsatscale/hourly_load_per_gps_location_night_charging_only.csv")
+
+
+# pull out the Lat / Lon of each school into schools df
+schools <- df[!duplicated(df$School_name), c("School_name", "Lat", "Lon")]
+
+# assign a unique ID to each school
+schools$ID <- seq.int(nrow(schools))
+
+# drop the Lat / Lon from the main df
+df <- df[, -c(1, 6, 7)]
+
+# replace School_name with ID in df
+df$School_name <- schools$ID[match(df$School_name, schools$School_name)]
+# rename School_name to ID
+colnames(df)[4] <- "school_id"
+colnames(df)[3] <- "day"
+
+# replace days of the week with integers 1-7
+# create a map of the days of the week
+days <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# create a second map of the integers 1-7
+days_int <- c(1, 2, 3, 4, 5, 6, 7)
+
+# replace the days of the week with integers
+df$day <- days_int[match(df$day, days)]
+
+# create a new column that is hour of the week (1-168) using the Day and hour columns
+df$timestep <- (df$day - 1) * 24 + df$hour
+
+View(df)
+
+# export to csv
+write.csv(df, "evsatscale/hourly_load_timesteps.csv", row.names = FALSE)
+write.csv(schools, "evsatscale/schools.csv", row.names = FALSE)
+```
+
+## Convert Schools DF to GeoJSON
+```{r}
+# read in schools csv
+schools <- read.csv("evsatscale/schools.csv")
+library(sf)
+# convert to shapefile with points for Lat / Lon
+schools <- st_as_sf(schools, coords = c("Lon", "Lat"), crs = 4326)
+View(schools)
+# write to geojson
+st_write(schools, "data/json/schools.geo.json", driver = "GeoJSON")
+# write as json
+library(jsonlite)
+write_json(schools, "evsatscale/schools.json")
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(h3jsr)
+# read in schools
+schools.df <- read.csv("evsatscale/schools.csv")
+# convert to shapefile
+schools.sf <- st_as_sf(schools.df, coords = c("Lon", "Lat"), crs = 4326)
+
+# get h3 id for each school
+schools.sf <- schools.sf %>% mutate(h3r8 = point_to_cell(geometry, res = 8, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r9 = point_to_cell(geometry, res = 9, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r10 = point_to_cell(geometry, res = 10, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r11 = point_to_cell(geometry, res = 11, simple = TRUE))
+schools.sf <- schools.sf %>% mutate(h3r12 = point_to_cell(geometry, res = 12, simple = TRUE))
+
+View(schools.sf)
+
+# export schools.sf as geojson
+write_sf(schools.sf, "evsatscale/schools_h3.geo.json", driver = "GeoJSON")
+```
+
+## Create a big df with all power readings
+```{r}
+# read in csv
+df <- read.csv("evsatscale/hourly_load_timesteps.csv")
+
+# create a pivot table with timestep as rows and school_id as columns and power as values
+# drop the hour and day and timestep columns
+df <- df[, -c(1, 3)]
+
+df <- df %>% pivot_wider(names_from = timestep, values_from = power)
+
+# add in the coordinates from schools.sf to df using school_id
+
+# read in schools.csv
+schools <- read.csv("evsatscale/schools.csv")
+
+# put the columns lon and lat into df
+df$lat <- schools$Lat[match(df$school_id, schools$ID)]
+df$lon <- schools$Lon[match(df$school_id, schools$ID)]
+
+# export df as json
+library(jsonlite)
+write_json(df, "evsatscale/power_pivot.json")
+
+```
+
+
+# export df as csv
+# write.csv(df, "evsatscale/power_pivot.csv", row.names = FALSE)
+```

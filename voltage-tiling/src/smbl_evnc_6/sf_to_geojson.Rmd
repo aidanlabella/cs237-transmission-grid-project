@@ -1,0 +1,323 @@
+---
+title: "conversions"
+author: "Isaiah Lyons-Galante"
+date: "2023-11-09"
+output: html_document
+---
+
+# Load Libraries
+```{r}
+library(tidyverse) # for data reading and processing
+library(jsonlite)
+library(sf)
+```
+
+# Buses
+```{r}
+# read in data
+buses.sf <- readRDS("./exports/buses_sf.rds")
+
+# look at bus columns
+colnames(buses.sf)
+
+# drop the columns dev, weighted_voltage_n10_d2, weighted_voltage_n3_d2
+buses.sf <- subset(buses.sf, select = -c(dev, weighted_voltage_n10_d2, weighted_voltage_n3_d2))
+# change column bus to name
+buses.sf <- buses.sf %>% rename(name = bus)
+
+# convert voltage 0s to 1s
+buses.sf$voltage[buses.sf$voltage == 0] <- 1
+
+# export as geojson
+st_write(buses.sf, "./exports/buses.geo.json", driver = "GeoJSON")
+```
+
+# Lines
+```{r}
+# read in data
+lines.sf <- readRDS("./exports/lines_sf.rds")
+
+# look at line columns
+colnames(lines.sf)
+
+# convert "to" to "bus1" and "from" to "bus2" and "line" to "name"
+lines.sf <- lines.sf %>% rename(bus1 = to, bus2 = from, name = line)
+
+# drop the columns dev.x and dev.y
+lines.sf <- subset(lines.sf, select = -c(dev.x, dev.y))
+
+
+# add column current with random values between 0 and 1
+set.seed(44)
+lines.sf$current <- runif(nrow(lines.sf), min = 0, max = 1)
+
+# export as geojson
+st_write(lines.sf, "./exports/lines.geo.json", driver = "GeoJSON")
+```
+
+# H3
+```{r}
+
+buses.h3 <- readRDS("./exports/buses_h3.rds")
+
+# convert from a sf shapefile dataframe to regular df
+buses.h3.df <- st_drop_geometry(buses.h3)
+
+# drop the area columns from buses.h3
+# buses.h3.df <- subset(buses.h3.df, select = -c(area))
+
+
+buses.h3.json <- toJSON(buses.h3.df)
+
+# export as csv and json
+write(buses.h3.json, file="./exports_envc6/buses_h3_r10.json")
+# write.csv(buses.h3, "./exports/buses_h3.csv")
+```
+
+# Voronoi
+```{r}
+library(sf)
+library(jsonlite)
+
+# read in voronoi.sf
+voronoi.sf <- readRDS("./exports/voronoi_sf.rds")
+
+# drop the columns dev, weighted_voltage_n10_d2, lng, lat, area, voltage.rounded
+voronoi.sf <- subset(voronoi.sf, select = -c(lng, lat, area))
+
+# convert into a geojson file
+st_write(voronoi.sf, "./exports_envc6/voronoi.geo.json", driver = "GeoJSON")
+```
+
+# Heatmap
+```{r}
+library(jsonlite)
+library(sf)
+library(dplyr)
+buses.idw.sf <- readRDS("./exports_envc6/buses_idw_sf_k10_n1.rds")
+buses.idw.df <- st_drop_geometry(buses.idw.sf)
+
+# rename long to longitude and lat to latitude
+buses.idw.df <- buses.idw.df %>% rename(longitude = long, latitude = lat)
+
+# drop the columns lat, long
+buses.idw.mini.sf <- subset(buses.idw.sf, select = -c(long, lat))
+
+# convert into a geojson file
+st_write(buses.idw.mini.sf, "./exports_envc6/contours.geo.json", driver = "GeoJSON")
+```
+
+# S2 Tiles
+```{r}
+library(jsonlite)
+library(sf)
+library(s2)
+buses.s2 <- readRDS("./exports/buses_s2.rds")
+
+
+# convert from a sf shapefile dataframe to regular df
+buses.s2.df <- st_drop_geometry(buses.s2)
+buses.s2.df$s2 <- as.character(buses.s2$s2)
+
+# keep only resolution 16
+buses.s2.df <- buses.s2.df %>% filter(res == 16)
+
+# drop the area columns from buses.s2
+# buses.s2.df <- subset(buses.s2.df, select = -c(count))
+buses.s2.json <- toJSON(buses.s2.df)
+
+# export as csv and json
+write(buses.s2.json, file="./exports_envc6/buses_s2_r16.json")
+# write.csv(buses.h3, "./exports/buses_s2.csv")
+```
+
+# Charging Stations
+```{r}
+buses.sf <- readRDS("./exports/buses_sf.rds")
+
+# keep only every 250th line
+stations.sf <- buses.sf %>% subset(voltage < 0.99)
+nrow(stations.sf)
+
+# convert column names & drop extra columns
+stations.sf <- stations.sf %>% 
+    rename(name = bus) %>% 
+    subset(select = -c(dev, voltage, weighted_voltage_n10_d2, weighted_voltage_n3_d2))
+
+
+stations.sf$rating <- 150
+stations.sf[1:10,]$rating <- 300
+stations.sf[40:76,]$rating <- 70
+
+# export as json
+st_write(stations.sf, "./exports/evstations.geo.json", driver = "GeoJSON")
+```
+
+# Transformers
+```{r}
+# read in data
+tx.sf <- readRDS("./exports/tx_only_sf.rds")
+
+# remove unimportant columns
+tx.sf <- tx.sf %>% select(
+  -phases,
+  -windings,
+  -loadloss,
+  -Noloadloss,
+  -normhkva,
+  -wdg1,
+  -conn1,
+  -EmergHKVA1,
+  -r1,
+  -wdg2,
+  -conn2,
+  -EmergHKVA2,
+  -r2,
+  -XHL,
+  -bus3
+)
+
+st_write(tx.sf, "./exports/tx.geo.json", driver = "GeoJSON")
+```
+
+# Lines only
+```{r}
+# read in data
+lines.sf <- readRDS("./exports/lines_only_sf.rds")
+
+# convert "to" to "bus1" and "from" to "bus2" and "line" to "name"
+lines.sf <- lines.sf %>% rename(bus1 = to, bus2 = from, name = line)
+
+# add column current with random values between 0 and 1
+set.seed(44)
+lines.sf$current <- runif(nrow(lines.sf), min = 0, max = 1)
+
+st_write(lines.sf, "./exports/linesonly.geo.json", driver = "GeoJSON")
+```
+
+## PV
+```{r}
+# read in data
+pv.sf <- readRDS("./exports/pv_sf.rds")
+
+# export to geojson
+st_write(pv.sf, "./exports_envc6/pv.geo.json", driver = "GeoJSON")
+```
+## EV
+```{r}
+# read in data
+ev.sf <- readRDS("./exports/ev_sf.rds")
+
+# export to geojson
+st_write(ev.sf, "./exports_envc6/ev.geo.json", driver = "GeoJSON")
+```
+## Storage
+```{r}
+# read in data
+storage.sf <- readRDS("./exports/storage_sf.rds")
+
+# export to geojson
+st_write(storage.sf, "./exports_envc6/storage.geo.json", driver = "GeoJSON")
+```
+## Transformers
+```{r}
+# read in data
+tx.sf <- readRDS("./exports/tx_sf.rds")
+
+# export to geojson
+st_write(tx.sf, "./exports_envc6/tx.geo.json", driver = "GeoJSON")
+```
+
+# EVs at Scale
+```{r}
+## Create Hex Map with H3
+```{r}
+library(h3jsr)
+library(tidyverse)
+# read in buses.sf
+buses.sf <- readRDS("./exports_envc6/buses_sf.rds")
+
+# set crs
+st_crs(buses.sf$geometry) <- 4326
+
+# get h3 id for each
+buses.sf <- buses.sf %>% mutate(h3r8 = point_to_cell(geometry, res = 8, simple = TRUE))
+buses.sf <- buses.sf %>% mutate(h3r9 = point_to_cell(geometry, res = 9, simple = TRUE))
+buses.sf <- buses.sf %>% mutate(h3r10 = point_to_cell(geometry, res = 10, simple = TRUE))
+buses.sf <- buses.sf %>% mutate(h3r11 = point_to_cell(geometry, res = 11, simple = TRUE))
+buses.sf <- buses.sf %>% mutate(h3r12 = point_to_cell(geometry, res = 12, simple = TRUE))
+# buses.sf <- buses.sf %>% mutate(h3r13 = point_to_cell(geometry, res = 13, simple = TRUE))
+
+# aggregate for each resolution
+buses.h3.r8 <- buses.sf %>% group_by(h3r8) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(),
+  res = 8
+) %>% rename(h3 = h3r8, voltage = avg)
+
+buses.h3.r9 <- buses.sf %>% group_by(h3r9) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(),
+  res = 9
+) %>% rename(h3 = h3r9, voltage = avg)
+
+buses.h3.r10 <- buses.sf %>% group_by(h3r10) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(),
+  res = 10
+) %>% rename(h3 = h3r10, voltage = avg)
+
+buses.h3.r11 <- buses.sf %>% group_by(h3r11) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(), 
+  res = 11
+) %>% rename(h3 = h3r11, voltage = avg)
+
+buses.h3.r12 <- buses.sf %>% group_by(h3r12) %>% summarise(
+  avg = mean(voltage),
+  stddev = sd(voltage),
+  count = n(), 
+  res = 12
+) %>% rename(h3 = h3r12, voltage = avg)
+
+# buses.h3.r13 <- buses.sf %>% group_by(h3r13) %>% summarise(
+#   avg = mean(voltage),
+#   stddev = sd(voltage),
+#   count = n(), 
+#   res = 13
+# ) %>% rename(h3 = h3r13, voltage = avg)
+
+# combine buses.h3.r9 and buses.h3.r10 and buses.h3.r11
+# buses.h3 <- rbind(buses.h3.r10, buses.h3.r11, buses.h3.r12)
+buses.h3 <- rbind(buses.h3.r8, buses.h3.r9, buses.h3.r10, buses.h3.r11, buses.h3.r12)
+buses.h3 <- buses.h3.r10
+
+# rm(buses.h3.r8, buses.h3.r9, buses.h3.r10, buses.h3.r11, buses.h3.r12)
+
+# update geometry
+# buses.h3$geometry <- cell_to_polygon(buses.h3$h3)
+
+# add a column "area" with the area of each hex polygon
+# buses.h3$area <- st_area(buses.h3$geometry)
+
+saveRDS(buses.h3, "./exports_envc6/buses_h3.rds")
+
+buses.h3 <- readRDS("./exports/buses_h3.rds")
+
+# convert from a sf shapefile dataframe to regular df
+buses.h3.df <- st_drop_geometry(buses.h3)
+
+# drop the area columns from buses.h3
+# buses.h3.df <- subset(buses.h3.df, select = -c(area))
+
+
+buses.h3.json <- toJSON(buses.h3.df)
+
+# export as csv and json
+write(buses.h3.json, file="./exports_envc6/buses_h3_r10.json")
+# write.csv(buses.h3, "./exports/buses_h3.csv")
+```

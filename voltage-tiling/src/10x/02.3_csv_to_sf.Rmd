@@ -1,0 +1,302 @@
+# Convert CSV files to SF Objects
+
+## Load Libraries
+```{r}
+library(tidyverse)
+library(sf)
+```
+
+## Define Global Variables
+```{r}
+# define the path to the dss files
+dss_path <- "~/Documents/nrel/data/sfo/solar_extreme_batteries_high_timeseries"
+csv_path <- "~/Documents/nrel/data/sfo/solar_extreme_batteries_high_timeseries_csv"
+var_path <- "10x/variablesdss"
+regions <- list.dirs(csv_path, full.names = FALSE, recursive = FALSE)
+```
+
+## Create Sub Directories
+```{r}
+# create the data export directory if it doesn't exist
+dir.create(var_path, showWarnings = FALSE)
+```
+
+## Convert the Buses to Spatial Data Frames
+```{r}
+# read in buses and lines.df
+buses.df <- readRDS(paste(csv_path, "buses_df.rds", sep = "/"))
+
+# convert buses.df to a sf object
+buses.sf <- st_as_sf(buses.df, coords = c("lng", "lat"), crs = 4326)
+buses.sf$region <- as.factor(buses.sf$region)
+# glimpse(buses.sf)
+
+# export buses sf as RDS
+saveRDS(buses.sf, paste(csv_path, "buses_sf.rds", sep = "/"))
+
+# make a P13U version
+buses.p13u.sf <- buses.sf %>% filter(region == "P13U") %>% select(-region) 
+saveRDS(buses.p13u.sf, paste(csv_path, "P13U", "buses_sf.rds", sep = "/"))
+# rm(buses.p13u.sf, buses.sf)
+```
+
+## Match Lines to Buses
+```{r}
+# read in the lines
+lines.df <- readRDS(paste(csv_path, "lines_df.rds", sep = "/"))
+lines.df$region <- as.factor(lines.df$region)
+glimpse(lines.df)
+
+# keep just P13U
+lines.p13u.df <- lines.df %>% filter(region == "P13U")
+# save the P13U lines
+saveRDS(lines.p13u.df, paste(csv_path, "P13U", "lines_df.rds", sep = "/"))
+# rm(lines.df, lines.p13u.df)
+```
+
+## Match Lines & Buses in P13U
+```{r}
+# read in the P13U buses and lines
+buses.p13u.df <- readRDS(paste(csv_path, "P13U", "buses_df.rds", sep = "/"))
+lines.p13u.df <- readRDS(paste(csv_path, "P13U", "lines_df.rds", sep = "/"))
+
+# find any buses that contain ".1.2.3" in their name
+# buses.p13u.df %>% filter(grepl("\\.", bus)) %>% select(bus)
+# no buses have even a period in their name >> drop everything after the period in the "bus1" and "bus2" column of lines.p13u.df
+lines.p13u.df$bus1 <- gsub("\\..*", "", lines.p13u.df$bus1)
+lines.p13u.df$bus2 <- gsub("\\..*", "", lines.p13u.df$bus2)
+
+# convert buses to a df
+# match on bus1 for the lines
+lines.p13u.df <- lines.p13u.df %>% 
+    left_join(buses.p13u.df, by = c("bus1" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat1 = lat, lng1 = lng)
+# match on bus2 for the lines
+lines.p13u.df <- lines.p13u.df %>% 
+    left_join(buses.p13u.df, by = c("bus2" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat2 = lat, lng2 = lng)
+# glimpse(lines.p13u.df)
+
+# count the number of lines that are missing a bus
+# lines.p13u.df %>% filter(is.na(lat1) | is.na(lat2)) %>% nrow()
+# only 447!!!!! That's hardly any.
+# now it's 0!! 
+# inspect lines that are missing a bus
+# lines.p13u.df %>% filter(is.na(lat1) | is.na(lat2)) %>% select(line, bus1, bus2)
+# count number of lines that don't have a bus1 or bus2
+# lines.p13u.df %>% filter(is.na(bus1) | is.na(bus2)) %>% nrow()
+# none are missing a bus1 or bus2
+# remove lines that are missing a bus
+# lines.p13u.df <- lines.p13u.df %>% filter(!is.na(lat1) & !is.na(lat2))
+# glimpse(lines.p13u.df)
+lines.p13u.df <- lines.p13u.df %>% 
+    select(-region)
+saveRDS(lines.p13u.df, paste(csv_path, "P13U", "lines_df.rds", sep = "/"))
+
+# convert to sf object as linestrings from lng1, lat1 to lng2, lat2
+lines.p13u.df <- lines.p13u.df %>%
+    mutate(wkt = paste("LINESTRING(", lng1, lat1, ",", lng2, lat2, ")", sep = " "))
+lines.p13u.df <- lines.p13u.df %>% select(-lat1, -lng1, -lat2, -lng2)
+lines.p13u.sf <- st_as_sf(lines.p13u.df, wkt = "wkt", crs = 4326)
+lines.p13u.sf <- lines.p13u.sf %>% 
+    rename (geometry = wkt)
+
+glimpse(lines.p13u.sf)
+# export lines.p13u.sf as RDS
+saveRDS(lines.p13u.sf, paste(csv_path, "P13U", "lines_sf.rds", sep = "/"))
+```
+
+## Match Lines & Buses in all regions
+```{r}
+# read in the buses and lines
+buses.df <- readRDS(paste(csv_path, "buses_df.rds", sep = "/"))
+lines.df <- readRDS(paste(csv_path, "lines_df.rds", sep = "/"))
+
+# clean up bus names
+lines.df$bus1 <- gsub("\\..*", "", lines.df$bus1)
+lines.df$bus2 <- gsub("\\..*", "", lines.df$bus2)
+
+# match on bus1 for the lines
+lines.df <- lines.df %>% 
+    left_join(buses.df, by = c("bus1" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat1 = lat, lng1 = lng)
+# In left_join(., buses.df, by = c(bus1 = "bus")) :
+#   Detected an unexpected many-to-many relationship between `x` and `y`.
+# ℹ Row 48283 of `x` matches multiple rows in `y`.
+# ℹ Row 54425 of `y` matches multiple rows in `x`.
+# ℹ If a many-to-many relationship is expected, set `relationship = "many-to-many"` to silence this warning.
+# match on bus2 for the lines
+lines.df <- lines.df %>% 
+    left_join(buses.df, by = c("bus2" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat2 = lat, lng2 = lng)
+# count the number of lines that are missing a bus
+lines.df %>% filter(is.na(lat1) | is.na(lat2)) %>% nrow()
+# just 4!! probably due to the many to many warning above
+# remove the lines that didn't match
+lines.df <- lines.df %>% filter(!is.na(lat1) & !is.na(lat2))
+lines.df <- lines.df %>% select(-region.x, -region.y)
+saveRDS(lines.df, paste(csv_path, "lines_df.rds", sep = "/"))
+
+# create a well known text column with linestring geometry
+lines.df <- lines.df %>%
+    mutate(wkt = paste("LINESTRING(", lng1, lat1, ",", lng2, lat2, ")", sep = " "))
+lines.df <- lines.df %>% select(-lat1, -lng1, -lat2, -lng2)
+
+# convert to sf
+lines.sf <- st_as_sf(lines.df, wkt = "wkt", crs = 4326)
+lines.sf <- lines.sf %>% 
+    rename(geometry = wkt)
+glimpse(lines.sf)
+
+# export lines.sf as RDS
+saveRDS(lines.sf, paste(csv_path, "lines_sf.rds", sep = "/"))
+```
+
+# Match Transformers & Buses in P13U
+```{r}
+# read in the P13U buses and lines
+buses.p13u.df <- readRDS(paste(csv_path, "P13U", "buses_df.rds", sep = "/"))
+tx.p13u.df <- readRDS(paste(csv_path, "P13U", "tx_df.rds", sep = "/"))
+glimpse(tx.p13u.df)
+# find any buses that contain ".1.2.3" in their name
+# buses.p13u.df %>% filter(grepl("\\.", bus)) %>% select(bus)
+# no buses have even a period in their name >> drop everything after the period in the "bus1" and "bus2" column of tx.p13u.df
+tx.p13u.df$bus1 <- gsub("\\..*", "", tx.p13u.df$bus1)
+tx.p13u.df$bus2 <- gsub("\\..*", "", tx.p13u.df$bus2)
+
+# convert buses to a df
+# match on bus1 for the tx
+tx.p13u.df <- tx.p13u.df %>% 
+    left_join(buses.p13u.df, by = c("bus1" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat1 = lat, lng1 = lng)
+# match on bus2 for the tx
+tx.p13u.df <- tx.p13u.df %>% 
+    left_join(buses.p13u.df, by = c("bus2" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat2 = lat, lng2 = lng)
+glimpse(tx.p13u.df)
+
+# count the number of tx that are missing a bus
+tx.p13u.df %>% filter(is.na(lat1) | is.na(lat2)) %>% nrow()
+# 0!
+# none are missing a bus1 or bus2
+# remove tx that are missing a bus
+# tx.p13u.df <- tx.p13u.df %>% filter(!is.na(lat1) & !is.na(lat2))
+
+# drop the region columns
+saveRDS(tx.p13u.df, paste(csv_path, "P13U", "tx_df.rds", sep = "/"))
+
+# convert to sf object as txtrings from lng1, lat1 to lng2, lat2
+tx.p13u.df <- tx.p13u.df %>%
+    mutate(wkt = paste("LINESTRING(", lng1, lat1, ",", lng2, lat2, ")", sep = " "))
+tx.p13u.df <- tx.p13u.df %>% select(-lat1, -lng1, -lat2, -lng2)
+tx.p13u.sf <- st_as_sf(tx.p13u.df, wkt = "wkt", crs = 4326)
+tx.p13u.sf <- tx.p13u.sf %>% 
+    rename (geometry = wkt)
+
+glimpse(tx.p13u.sf)
+# export tx.p13u.sf as RDS
+saveRDS(tx.p13u.sf, paste(csv_path, "P13U", "tx_sf.rds", sep = "/"))
+```
+
+# Match All Transformers & Buses in SFO
+```{r}
+# read in the P13U buses and lines
+buses.df <- readRDS(paste(csv_path, "buses_df.rds", sep = "/"))
+tx.df <- readRDS(paste(csv_path, "tx_df.rds", sep = "/"))
+glimpse(tx.df)
+
+# remove the suffixes after the "." from the bus names
+tx.df$bus1 <- gsub("\\..*", "", tx.df$bus1)
+tx.df$bus2 <- gsub("\\..*", "", tx.df$bus2)
+
+# match on bus1 for the tx
+tx.df <- tx.df %>% 
+    left_join(buses.df, by = c("bus1" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat1 = lat, lng1 = lng)
+# match on bus2 for the tx
+tx.df <- tx.df %>% 
+    left_join(buses.df, by = c("bus2" = "bus")) %>% 
+    select(-voltage) %>%
+    rename(lat2 = lat, lng2 = lng)
+glimpse(tx.df)
+
+# count the number of tx that are missing a bus
+tx.df %>% filter(is.na(lat1) | is.na(lat2)) %>% nrow()
+# only 92!
+# remove tx that are missing a bus
+tx.df <- tx.df %>% filter(!is.na(lat1) & !is.na(lat2))
+
+tx.df <- tx.df %>% 
+    select(-region.x, -region.y)
+saveRDS(tx.df, paste(csv_path, "tx_df.rds", sep = "/"))
+
+
+# convert to sf object as txtrings from lng1, lat1 to lng2, lat2
+tx.df <- tx.df %>%
+    mutate(wkt = paste("LINESTRING(", lng1, lat1, ",", lng2, lat2, ")", sep = " "))
+tx.df <- tx.df %>% select(-lat1, -lng1, -lat2, -lng2)
+
+tx.sf <- st_as_sf(tx.df, wkt = "wkt", crs = 4326)
+
+tx.sf <- tx.sf %>% 
+    rename (geometry = wkt)
+
+glimpse(tx.sf)
+# export tx.sf as RDS
+saveRDS(tx.sf, paste(csv_path, "tx_sf.rds", sep = "/"))
+```
+
+## Create Region Specific Matched Versions of Lines & Transformers
+```{r}
+buses.df <- readRDS(paste(csv_path, "buses_df.rds", sep = "/"))
+lines.df <- readRDS(paste(csv_path, "lines_df.rds", sep = "/"))
+tx.df <- readRDS(paste(csv_path, "tx_df.rds", sep = "/"))
+
+for (r in regions) {
+    print(paste0("Processing region: ", r))
+    buses.region.df <- buses.df %>% filter(region == r)
+    lines.region.df <- lines.df %>% filter(region == r)
+    tx.region.df <- tx.df %>% filter(region == r)
+    saveRDS(buses.region.df, paste(csv_path, r, "buses_df.rds", sep = "/"))
+    saveRDS(lines.region.df, paste(csv_path, r, "lines_df.rds", sep = "/"))
+    saveRDS(tx.region.df, paste(csv_path, r, "tx_df.rds", sep = "/"))
+}   
+```
+
+## Make a Tiny CSV Version of Buses, Lines, and Transformers
+```{r}
+# buses
+buses.df <- readRDS(paste(csv_path, "buses_df.rds", sep = "/"))
+glimpse(buses.df)
+buses.p13u.df <- buses.df %>% filter(region == "P13U")
+buses.tiny.df <- buses.df %>% select(lat, lng, voltage)
+buses.tiny.p13u.df <- buses.p13u.df %>% select(lat, lng, voltage)
+write_csv(buses.tiny.df, paste(csv_path, "buses_tiny.csv", sep = "/"))
+write_csv(buses.tiny.p13u.df, paste(csv_path, "P13U", "buses_tiny.csv", sep = "/"))
+
+# lines
+lines.df <- readRDS(paste(csv_path, "lines_df.rds", sep = "/"))
+glimpse(lines.df)
+lines.p13u.df <- lines.df %>% filter(region == "P13U")
+lines.tiny.df <- lines.df %>% select(lat1, lng1, lat2, lng2)
+lines.tiny.p13u.df <- lines.p13u.df %>% select(lat1, lng1, lat2, lng2)
+
+# tx
+tx.df <- readRDS(paste(csv_path, "tx_df.rds", sep = "/"))
+glimpse(tx.df)
+tx.p13u.df <- readRDS(paste(csv_path, "P13U", "tx_df.rds", sep = "/"))
+tx.tiny.df <- tx.df %>% select(lat1, lng1, lat2, lng2)
+tx.tiny.p13u.df <- tx.p13u.df %>% select(lat1, lng1, lat2, lng2)
+# combine lines and tx
+edges.tiny.df <- bind_rows(lines.tiny.df, tx.tiny.df)
+edges.tiny.p13u.df <- bind_rows(lines.tiny.p13u.df, tx.tiny.p13u.df)
+write_csv(edges.tiny.df, paste(csv_path, "edges_tiny.csv", sep = "/"))
+write_csv(edges.tiny.p13u.df, paste(csv_path, "P13U", "edges_tiny.csv", sep = "/"))
+```

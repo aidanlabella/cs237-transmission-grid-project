@@ -1,0 +1,84 @@
+
+# Glyphs
+```{r}
+library(tidyverse)
+library(sf)
+library(ggmap)
+```
+
+## Read in Data
+```{r}
+# read in RDS
+lines.sf <- readRDS("data/10x/lines_sf.rds")
+buses.sf <- readRDS("data/10x/buses_sf.rds")
+map <- readRDS("data/10x/map_stadia_z14.rds")
+
+# get the bounding box of map
+left <- attr(map, "bb")$ll.lon
+right <- attr(map, "bb")$ur.lon
+bottom <- attr(map, "bb")$ll.lat
+top <- attr(map, "bb")$ur.lat
+```
+
+## Plot
+```{r}
+# plot the buses and lines
+glyph_plot <- ggmap(map) +
+    geom_sf(
+        data = buses.sf, 
+        aes(color = voltage, cex = abs(voltage - 1)),
+        inherit.aes = FALSE
+    ) +  
+    geom_sf(
+        data = lines.sf, 
+        color="black", 
+        alpha = 0.2, 
+        inherit.aes = FALSE
+    ) +
+    scale_size_continuous(
+        range = c(0, 0.2),
+        limits = c(0, 0.05)
+    ) +
+    scale_color_gradient2(
+        low = "darkblue",
+        mid = "white",
+        high = "darkred",
+        midpoint = 0.99,
+        limits = c(0.95, 1.05),
+        space = "Lab",
+        guide = "colourbar",
+        aesthetics = "color",
+        oob = scales::squish
+    ) +
+    theme(
+        legend.position = c(0.96, 0.15),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        text = element_text(family = "Serif", size = 18)
+    ) +
+    coord_sf(xlim = c(left, right), ylim = c(bottom, top)) +
+    guides(size = FALSE)
+
+# show plot
+glyph_plot
+
+# export plot to png
+ggsave(
+  filename = "10x/figures/glyph_plot_v2_lines.png", 
+  glyph_plot,
+  width = 6480,
+  height = 6480,
+  dpi = 300,
+  units = "px",
+  device = "png",
+  limitsize = FALSE
+)
+```
+
+## To Do
+- Change the Z-order of overplotted points: https://stackoverflow.com/questions/60253713/change-visual-order-of-overlapping-factor-values-in-geom-sf-in-r
+- Determine if we should use a different scenario from the sfo dataset
