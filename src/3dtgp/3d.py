@@ -402,20 +402,20 @@ def render_network_pyvista(
         kind = d["kind"]
 
         if kind == "bus":
-            sph = pv.Sphere(radius=base_bus_r, center=(x, y, z))
+            sph = pv.Cylinder(radius=base_bus_r, center=(x, y, z))
             plotter.add_mesh(sph, color="white")
             bus_pts.append([x, y, z])
             bus_labels.append(d.get("bus_name") or f"Bus {d['bus_number']}")
 
         elif kind == "gen":
-            sph = pv.Sphere(radius=base_gen_r, center=(x, y, z))
-            actor = plotter.add_mesh(sph, color="green")
+            sph = pv.Sphere(radius=base_gen_r * 2, center=(x, y, z))
+            actor = plotter.add_mesh(sph, color="black")
             gen_key = d.get("gen_key")
             if gen_key:
                 gen_actors_by_key[gen_key] = actor
 
         elif kind == "load":
-            sph = pv.Sphere(radius=base_load_r, center=(x, y, z))
+            sph = pv.Cylinder(radius=base_load_r, center=(x, y, z))
             plotter.add_mesh(sph, color="orange")
             load_pts.append([x, y, z])
             load_labels.append(d.get("name_raw", "load"))
