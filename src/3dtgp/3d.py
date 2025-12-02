@@ -223,6 +223,7 @@ def compute_layout_positions(G, bbox_3857):
         x, y = to_bbox(p01)
         pos3[n] = (x, y, 0.0)
 
+    # place gens/loads near their parent bus
     for n, d in G.nodes(data=True):
         if d.get("kind") in ("gen", "load"):
             bn = d["bus_number"]
@@ -295,7 +296,7 @@ def load_gen_freq():
 
     times = df["time"]
     df = df.drop(columns=["time"])
-    # columns are already "generator-3933-CG" etc.
+    # column names already like "generator-3933-CG"
     return times.reset_index(drop=True), df
 
 
@@ -390,14 +391,11 @@ def render_network_pyvista(
     bus_pts, bus_labels = [], []
     load_pts, load_labels = [], []
 
-    gen_actors_by_key = {}          # gen_key -> sphere actor
-    gen_label_actors_by_key = {}    # gen_key -> text_actor
-    gen_label_pos_by_key = {}       # gen_key -> (x,y,z_label)
+    gen_actors_by_key = {}  # gen_key -> sphere actor
 
     base_bus_r = 0.003 * (xmax - xmin)
     base_gen_r = 0.0024 * (xmax - xmin)
     base_load_r = 0.0024 * (xmax - xmin)
-    gen_label_z_offset = 0.02 * (ymax - ymin)   # text *below* the generator
 
     for n, d in G.nodes(data=True):
         x, y, z = pos[n]
@@ -415,8 +413,6 @@ def render_network_pyvista(
             gen_key = d.get("gen_key")
             if gen_key:
                 gen_actors_by_key[gen_key] = actor
-                # label position: slightly below the generator sphere
-                gen_label_pos_by_key[gen_key] = (x, y, z - gen_label_z_offset)
 
         elif kind == "load":
             sph = pv.Sphere(radius=base_load_r, center=(x, y, z))
@@ -505,7 +501,7 @@ def render_network_pyvista(
             branch_cols = available_cols
             branch_use_df = branch_df[branch_cols]
             branch_norm = compute_contrasted_norm(branch_use_df, contrast_zoom=0.4)
-            branch_cmap = colormaps.get_cmap("turbo")
+            branch_cmap = colormaps.get_cmap("viridis")
 
     # Generator frequencies
     gen_cols, gen_use_df, gen_norm, gen_cmap = [], None, None, None
@@ -518,7 +514,7 @@ def render_network_pyvista(
             gen_cols = available_cols
             gen_use_df = gen_df[gen_cols]
             gen_norm = compute_contrasted_norm(gen_use_df, contrast_zoom=0.4)
-            gen_cmap = colormaps.get_cmap("turbo")
+            gen_cmap = colormaps.get_cmap("plasma")
 
     if not has_branch and not has_gen:
         plotter.add_text(
@@ -555,18 +551,18 @@ def render_network_pyvista(
 
     BRANCH_GAMMA = 0.6
     GEN_GAMMA = 0.6
-    state = {"idx": 0}
 
-    time_text_actor = plotter.add_text(
-        f"time: {display_times.iloc[0]} (index 0/{n_steps - 1})",
-        font_size=10,
-        position="upper_left",
-    )
+    # Keep both time index and a handle to the current time-text actor
+    state = {"idx": 0, "time_text_actor": None}
+
+    # Static hint text
     plotter.add_text(
         "Slider: time index • 'n': next timestep • 'l': bus labels • click bus for name",
         font_size=10,
         position="lower_left",
     )
+
+    # --------- Animation update function ----------
 
     def apply_index(idx: int):
         idx = int(max(0, min(n_steps - 1, idx)))
@@ -587,54 +583,40 @@ def render_network_pyvista(
                 for actor in branch_actors_by_name.get(col, []):
                     actor.GetProperty().SetColor(float(r), float(g), float(b))
 
-        # Generator colors + **text labels under each generator**
+        # Generator colors
         if has_gen:
             row_g = gen_use_df.iloc[idx]
             for col in gen_cols:
                 val = row_g[col]
                 if not np.isfinite(val):
                     continue
-
                 mag = abs(float(val))
                 t = gen_norm(mag)
                 t = t ** GEN_GAMMA
                 rgba = gen_cmap(t)
                 r, g, b = rgba[:3]
 
-                # color sphere
                 actor = gen_actors_by_key.get(col)
                 if actor is not None:
                     actor.GetProperty().SetColor(float(r), float(g), float(b))
 
-                # update text label actor under this generator
-                # remove old one if it exists
-                old_label = gen_label_actors_by_key.get(col)
-                if old_label is not None:
-                    plotter.remove_actor(old_label)
+        # time HUD — remove old actor, add new one
+        if state["time_text_actor"] is not None:
+            plotter.remove_actor(state["time_text_actor"])
+        text = f"time: {display_times.iloc[idx]} (index {idx}/{n_steps - 1})"
+        state["time_text_actor"] = plotter.add_text(
+            text,
+            font_size=10,
+            position="upper_left",
+        )
 
-                label_pos = gen_label_pos_by_key.get(col)
-                if label_pos is not None:
-                    # You can tweak formatting, e.g. 2 or 3 decimals
-                    label_text = f"{float(val):.3f}"
-                    # new_label = plotter.add_text_3d(
-                    #     label_text,
-                    #     position=label_pos,
-                    #     scale=0.02 * (xmax - xmin),
-                    #     color=(float(r), float(g), float(b)),
-                    #     depth=0.0,
-                    # )
-                    # gen_label_actors_by_key[col] = new_label
-
-        # time HUD
-        # time_text_actor.SetInput(
-        #     f"time: {display_times.iloc[idx]} (index {idx}/{n_steps - 1})"
-        # )
         plotter.render()
 
     # init frame
     apply_index(0)
 
-    # Slider
+    # --------- Slider + key controls ----------
+
     def slider_cb(val):
         apply_index(int(val))
 
@@ -648,12 +630,81 @@ def render_network_pyvista(
         style="modern",
     )
 
-    # 'n' key = next timestep
     def step_forward():
         new_idx = (state["idx"] + 1) % n_steps
         apply_index(new_idx)
 
     plotter.add_key_event("n", lambda: step_forward())
+
+    # --------- Colorbars (using dummy meshes) ----------
+
+    # Branch current colorbar
+    if has_branch and branch_norm is not None:
+        vmin_b, vmax_b = float(branch_norm.vmin), float(branch_norm.vmax)
+        dummy_b = pv.Cube(
+            center=(xmin, ymin, BASEMAP_Z_OFFSET - 10000),
+            x_length=1.0,
+            y_length=1.0,
+            z_length=1.0,
+        )
+
+        n_pts_b = dummy_b.n_points
+        dummy_b["branch_vals"] = np.linspace(vmin_b, vmax_b, n_pts_b)
+
+        plotter.add_mesh(
+            dummy_b,
+            scalars="branch_vals",
+            cmap="viridis",
+            clim=[vmin_b, vmax_b],
+            opacity=0.0,
+            show_scalar_bar=True,
+            scalar_bar_args=dict(
+                title="Branch |I| (scaled)",
+                n_labels=5,
+                italic=False,
+                bold=True,
+                vertical=True,
+                position_x=0.86,
+                position_y=0.15,
+                width=0.12,
+                height=0.7,
+            ),
+        )
+
+    # Generator frequency colorbar
+    if has_gen and gen_norm is not None:
+        vmin_g, vmax_g = float(gen_norm.vmin), float(gen_norm.vmax)
+        dummy_g = pv.Cube(
+            center=(xmax, ymin, BASEMAP_Z_OFFSET - 10000),
+            x_length=1.0,
+            y_length=1.0,
+            z_length=1.0,
+        )
+
+        n_pts_g = dummy_g.n_points
+        dummy_g["gen_vals"] = np.linspace(vmin_g, vmax_g, n_pts_g)
+
+        plotter.add_mesh(
+            dummy_g,
+            scalars="gen_vals",
+            cmap="plasma",
+            clim=[vmin_g, vmax_g],
+            opacity=0.0,
+            show_scalar_bar=True,
+            scalar_bar_args=dict(
+                title="Generator Frequency (Hz)",
+                n_labels=5,
+                italic=False,
+                bold=True,
+                vertical=True,
+                position_x=0.02,
+                position_y=0.15,
+                width=0.12,
+                height=0.7,
+            ),
+        )
+
+    # --------- Show ----------
 
     plotter.add_axes()
     plotter.show_bounds(grid="front")
