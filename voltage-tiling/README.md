@@ -56,3 +56,58 @@ using IJulia
 installkernel("Julia 1.12 (voltage-tiling)",
     env=Dict("JULIA_DEPOT_PATH" => "/Users/korey417/Desktop/Scientific Visualization/cs237-transmission-grid-project/.julia_depot"))
 ```
+
+## Next Steps: Getting 2D Grid Visualization Running
+
+To display the 2D electric grid visualization (baseline for 3D model), follow these steps in order:
+
+### Step 1: Download Data (Python kernel)
+```
+src/10x/01_get_s3_data.ipynb        # Download grid data from S3
+src/10x/02.1_get_s3_data_dss.ipynb  # Download DSS simulation files
+```
+- Use **Python 3.11 (voltage-tiling)** kernel
+- Requires AWS credentials configured
+
+### Step 2: Process Data (R/RMarkdown)
+```
+src/10x/02.2_dss_to_csv.Rmd   # Parse DSS files → CSV/RDS
+src/10x/02.3_csv_to_sf.Rmd    # Convert to SF spatial objects
+src/10x/03_map.Rmd            # Fetch base map tiles
+```
+- Run these in RStudio or knit via command line
+- Outputs go to `data/10x/` as RDS files
+
+### Step 3: Generate 2D Visualization (R/RMarkdown)
+```
+src/10x/04_glyphs.Rmd         # ← START HERE for 3D baseline
+```
+This produces:
+- Bus locations as points (X, Y coordinates)
+- Transmission lines connecting buses
+- Voltage values encoded as colors (blue → white → red)
+- Output: `figures/10x/glyph_plot.png` (6480x6480px)
+
+### Alternative Visualization Methods
+| File | Output | Description |
+|------|--------|-------------|
+| `05_h3.Rmd` | Hexagonal tiles | Aggregated heatmap at multiple resolutions |
+| `06_s2.Rmd` | Square tiles | Alternative tiling approach |
+| `08_voronoi.Rmd` | Voronoi polygons | Area-based voltage regions |
+| `09_contours.Rmd` | IDW interpolation | Smooth voltage surface |
+| `10_networks.Rmd` | Network graph | Topology analysis |
+
+### Pre-computed Data Available
+If you want to skip Steps 1-2, pre-computed spatial data exists in:
+- `data/10x/buses_sf.rds` - Bus locations with voltages
+- `data/10x/lines_sf.rds` - Transmission line geometries
+- `data/exports_p13u/` - Smaller test dataset (24k buses)
+- `data/exports_envc6/` - GeoJSON exports for web/3D
+
+### For 3D Model Integration
+The best starting points for 3D are:
+1. `data/exports_p13u/buses.geo.json` - Bus points as GeoJSON
+2. `data/exports_p13u/lines.geo.json` - Lines as GeoJSON
+3. `data/exports_envc6/contours.geo.json` - Voltage contours
+
+These GeoJSON files can be directly imported into Three.js, deck.gl, or other 3D frameworks.
