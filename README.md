@@ -8,7 +8,7 @@ Hello, and thank you for participating in this project!
 3. Navigate to the `src/3dtgp` subdirectory; i.e. `cd src/3dtgp`
 4. Initailize the enviornment with the following commands:
 ```sh
-conda env create -f enviornment.yml
+conda env create -f environment.yml
 ```
 and then install the rasterio package from pypi:
 ```sh
