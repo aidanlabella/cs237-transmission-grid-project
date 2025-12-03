@@ -50,8 +50,8 @@ except Exception:
     _HAS_CTX = False
 
 # --------- Configuration ----------
-METADATA_DIR = Path('/Users/aidan/sandbox/cs237-transmission-grid-project/data/WECC_metadata')
-SIMDATA_DIR = Path('/Users/aidan/sandbox/cs237-transmission-grid-project/data/WECC_sim_data/trip_branch_MESA CAL    -2408-MESA CAL    -2438-i_360')
+METADATA_DIR = Path('../../data/WECC_metadata')
+SIMDATA_DIR = Path('../../data/WECC_sim_data/trip_branch_MESA CAL    -2408-MESA CAL    -2438-i_360')
 
 FILES = {
     "bus": METADATA_DIR / "bus_info.csv",
@@ -60,7 +60,7 @@ FILES = {
     "load": METADATA_DIR / "load_info.csv",
     "outline": METADATA_DIR / "wecc_outline.geojson",
     "basemap": METADATA_DIR / "wecc_satellite.tif",    # optional, can be missing
-    "branch_current": SIMDATA_DIR / "branch_current_real.csv",  # per-timestep branch currents
+    "branch_current": SIMDATA_DIR / "branch_current_real_sin.csv",  # per-timestep branch currents
     "gen_freq": SIMDATA_DIR / "gen_freqs_sin.csv"
 }
 
@@ -418,12 +418,18 @@ def render_network_pyvista(
 
     # Branch labels (black text)
     if branch_label_positions:
+        for i, label in enumerate(branch_label_texts):
+            if 'SUMMIT' not in label or 'SUMITSPP' not in label:
+                branch_label_texts[i] = ''
+            else:
+                print(label)
+
         plotter.add_point_labels(
             branch_label_positions,
             branch_label_texts,
             point_size=0,
-            font_size=10,
-            text_color="black",
+            font_size=30,
+            text_color="blue",
             shape=None,
             always_visible=True,
         )
@@ -472,6 +478,7 @@ def render_network_pyvista(
             plotter.add_mesh(sph, color="orange")
 
     # Generator labels: white text with green square background
+
     if gen_label_positions:
         plotter.add_point_labels(
             gen_label_positions,
@@ -612,7 +619,7 @@ def render_network_pyvista(
         text = f"time: {display_times.iloc[idx]} (index {idx}/{n_steps - 1})"
         state["time_text_actor"] = plotter.add_text(
             text,
-            font_size=10,
+            font_size=14,
             position="upper_left",
         )
 
@@ -665,7 +672,7 @@ def render_network_pyvista(
             opacity=0.0,
             show_scalar_bar=True,
             scalar_bar_args=dict(
-                title="Branch |I|",
+                title="Branch (Current)",
                 n_labels=5,
                 italic=False,
                 bold=True,
