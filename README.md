@@ -6,7 +6,7 @@ Hello, and thank you for participating in this project!
 1. Ensure you have Python 3.11 available on your machine. If not, you can find instructions here: https://www.python.org/downloads/release/python-3110/
 2. Ensure you have conda installed on your machine. If not, you can find instructions here (we suggest miniconda): https://www.anaconda.com/docs/getting-started/miniconda/main
 3. Navigate to the `src/3dtgp` subdirectory; i.e. `cd src/3dtgp`
-4. Initailize the enviornment with the following commands:
+4. Initailize the enviornment with the following commands. Note that the conda enviornment creation can take a few minutes.
 ```sh
 conda env create -f environment.yml
 conda activate 3dtgp
