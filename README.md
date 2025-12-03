@@ -9,14 +9,14 @@ Hello, and thank you for participating in this project!
 4. Initailize the enviornment with the following commands:
 ```sh
 conda env create -f environment.yml
+conda activate 3dtgp
 ```
 and then install the rasterio package from pypi:
 ```sh
 pip install rasterio
 ```
-5. You should be able to start the application! Run the following commands:
+5. You should be able to start the application! Run the following command:
 ```sh
-conda activate 3dtgp
 python3 3d.py
 ```
 
