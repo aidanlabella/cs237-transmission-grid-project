@@ -19,3 +19,6 @@ pip install rasterio
 conda activate 3dtgp
 python3 3d.py
 ```
+
+Please fill out the following google survey to participate in our user study!
+https://docs.google.com/forms/d/e/1FAIpQLSe2kkXcdUo2b4971eLAb6ZFr04ES8A0WECvFEQ7fiS7NjKBrg/viewform?usp=sharing&ouid=116663051443104417913
