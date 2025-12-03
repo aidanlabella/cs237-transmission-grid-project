@@ -94,6 +94,41 @@ def load_tables():
     return buses, branches, gens, loads, outline
 
 
+def geojson_bounds_ll(geojson_obj):
+    def coords_iter(feature):
+        geom = feature.get("geometry", {})
+        gtype = geom.get("type")
+        coords = geom.get("coordinates", [])
+        if gtype == "Polygon":
+            for ring in coords:
+                for x, y in ring:
+                    yield x, y
+        elif gtype == "MultiPolygon":
+            for poly in coords:
+                for ring in poly:
+                    for x, y in ring:
+                        yield x, y
+
+    xs, ys = [], []
+    for feat in geojson_obj.get("features", []):
+        for x, y in coords_iter(feat):
+            xs.append(x)
+            ys.append(y)
+    if not xs:
+        return (0.0, 1.0, 0.0, 1.0)
+    return (min(xs), max(xs), min(ys), max(ys))
+
+
+def project_bbox_to_3857(bbox_ll):
+    xmin, xmax, ymin, ymax = bbox_ll
+    to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
+    x0, y0 = to_3857(xmin, ymin)
+    x1, y1 = to_3857(xmax, ymax)
+    xmin_m, xmax_m = min(x0, x1), max(x0, x1)
+    ymin_m, ymax_m = min(y0, y1), max(y0, y1)
+    return (xmin_m, xmax_m, ymin_m, ymax_m)
+
+
 def build_graph(buses, branches, gens, loads):
     G = nx.Graph()
 
@@ -118,7 +153,7 @@ def build_graph(buses, branches, gens, loads):
                 gnode,
                 kind="gen",
                 bus_number=bn,
-                gen_key=gen_name_raw,   # should match "generator-..." columns
+                gen_key=gen_name_raw,   # matches "generator-..." columns
                 name_raw=gen_name_raw,
             )
             G.add_edge(f"bus:{bn}", gnode, kind="gen_tie")
@@ -162,142 +197,57 @@ def build_graph(buses, branches, gens, loads):
     return G
 
 
-# --------- Layout from lat/lon ----------
+def compute_layout_positions(G, bbox_3857):
+    xmin, xmax, ymin, ymax = bbox_3857
+    bus_nodes = [n for n, d in G.nodes(data=True) if d.get("kind") == "bus"]
+    H = G.subgraph(bus_nodes).copy()
+    if len(H) == 0:
+        raise ValueError("No bus nodes to layout.")
 
-def compute_layout_positions(G, buses):
-    """
-    Compute node positions from bus lat/lon, projected to EPSG:3857,
-    then place generators/loads around their parent bus.
+    pos2 = nx.spring_layout(H, dim=2, iterations=200, seed=42)
 
-    Returns:
-        pos: dict[node] -> (x, y, z)
-        bbox_3857: (xmin, xmax, ymin, ymax)
-    """
+    xs = np.array([p[0] for p in pos2.values()])
+    ys = np.array([p[1] for p in pos2.values()])
+    x0, x1 = xs.min(), xs.max()
+    y0, y1 = ys.min(), ys.max()
+    xr = max(1e-9, x1 - x0)
+    yr = max(1e-9, y1 - y0)
 
-    # Try to auto-detect longitude/latitude columns in bus_info.csv
-    def find_col(candidates):
-        for c in buses.columns:
-            lc = c.lower().replace(" ", "").replace("-", "").replace(".", "")
-            for cand in candidates:
-                if lc == cand:
-                    return c
-        return None
+    def norm(p):
+        nx_ = (p[0] - x0) / xr
+        ny_ = (p[1] - y0) / yr
+        return nx_, ny_
 
-    lon_col = find_col(
-        [
-            "lon",
-            "longitude",
-            "buslon",
-            "buslongitude",
-            "x",
-            "xcoord",
-            "xcoordinate",
-        ]
-    )
-    lat_col = find_col(
-        [
-            "lat",
-            "latitude",
-            "buslat",
-            "buslatitude",
-            "y",
-            "ycoord",
-            "ycoordinate",
-        ]
-    )
+    def to_bbox(p01):
+        x = xmin + p01[0] * (xmax - xmin)
+        y = ymin + p01[1] * (ymax - ymin)
+        return x, y
 
-    def place_children(pos, bbox_3857):
-        """Place generators/loads around their parent buses."""
-        xmin, xmax, ymin, ymax = bbox_3857
-        span = max(xmax - xmin, ymax - ymin, 1.0)
-        gen_offset_r = 0.015 * span  # radius for gens
-        load_offset_r = 0.015 * span # radius for loads
+    pos3 = {}
+    for n, p in pos2.items():
+        p01 = norm(p)
+        x, y = to_bbox(p01)
+        pos3[n] = (x, y, 0.0)
 
-        for n, d in G.nodes(data=True):
-            kind = d.get("kind")
-            if kind not in ("gen", "load"):
-                continue
-
+    # place gens/loads near their parent bus
+    for n, d in G.nodes(data=True):
+        if d.get("kind") in ("gen", "load"):
             bn = d["bus_number"]
             parent = f"bus:{bn}"
-            if parent not in pos:
-                pos[n] = (xmin, ymin, 0.0)
-                continue
+            if parent in pos3:
+                px, py, pz = pos3[parent]
+                h = abs(hash(n)) % 360
+                ang = math.radians(h)
+                r = 0.015 * (xmax - xmin)
+                x = px + r * math.cos(ang)
+                y = py + r * math.sin(ang)
+                z = 50.0 if d["kind"] == "gen" else 0.0
+                pos3[n] = (x, y, z)
+            else:
+                pos3[n] = (xmin, ymin, 0.0)
 
-            px, py, pz = pos[parent]
-            h = abs(hash(n)) % 360
-            ang = math.radians(h)
-            r = gen_offset_r if kind == "gen" else load_offset_r
-            x = px + r * math.cos(ang)
-            y = py + r * math.sin(ang)
-            z = 50.0 if kind == "gen" else 0.0
-            pos[n] = (x, y, z)
+    return pos3
 
-        return pos
-
-    # If lat/lon columns are missing, fall back to a spring layout and
-    # normalize it into a synthetic bounding box so the rest of the pipeline
-    # (basemap/frame sizing, offsets for gens/loads) still works.
-    if lon_col is None or lat_col is None:
-        print("[layout] no lat/lon columns found; using spring_layout fallback.")
-        bus_nodes = [n for n, d in G.nodes(data=True) if d.get("kind") == "bus"]
-        if not bus_nodes:
-            raise ValueError("Graph has no bus nodes to layout.")
-
-        bus_subgraph = G.subgraph(bus_nodes)
-        raw_pos = nx.spring_layout(bus_subgraph, dim=2, seed=42)
-
-        xs = [p[0] for p in raw_pos.values()]
-        ys = [p[1] for p in raw_pos.values()]
-        xmin, xmax = min(xs), max(xs)
-        ymin, ymax = min(ys), max(ys)
-
-        span = max(xmax - xmin, ymax - ymin, 1e-6)
-        scale = 1_000_000.0 / span  # scale to a reasonable "meters" span
-        cx = 0.5 * (xmin + xmax)
-        cy = 0.5 * (ymin + ymax)
-
-        pos = {
-            n: ((p[0] - cx) * scale, (p[1] - cy) * scale, 0.0)
-            for n, p in raw_pos.items()
-        }
-
-        xs_scaled = [p[0] for p in pos.values()]
-        ys_scaled = [p[1] for p in pos.values()]
-        bbox_3857 = (min(xs_scaled), max(xs_scaled), min(ys_scaled), max(ys_scaled))
-
-        return place_children(pos, bbox_3857), bbox_3857
-
-    # Project WGS84 (EPSG:4326) -> Web Mercator (EPSG:3857)
-    to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform
-
-    # First, place buses using their real coordinates
-    pos = {}
-    xs, ys = [], []
-
-    for _, row in buses.iterrows():
-        bn = int(row["bus_number"])
-        if f"bus:{bn}" not in G:
-            continue
-
-        lon = float(row[lon_col])
-        lat = float(row[lat_col])
-        x, y = to_3857(lon, lat)
-        pos[f"bus:{bn}"] = (x, y, 0.0)
-        xs.append(x)
-        ys.append(y)
-
-    if not xs:
-        raise ValueError("No bus positions were computed from lat/lon.")
-
-    xmin, xmax = min(xs), max(xs)
-    ymin, ymax = min(ys), max(ys)
-    bbox_3857 = (xmin, xmax, ymin, ymax)
-
-    return place_children(pos, bbox_3857), bbox_3857
-
-
-# --------- Basemap helpers ----------
 
 def build_basemap_plane_from_geotiff(tif_path, z_offset=-1500.0):
     if not tif_path.exists():
@@ -321,50 +271,8 @@ def build_basemap_plane_from_geotiff(tif_path, z_offset=-1500.0):
     )
     plane.texture_map_to_plane(inplace=True)
     tex = pv.Texture(img)
-    tex.flip_y = True  # VTK textures assume origin at lower-left; flip to keep north-up
     return plane, tex, (left, right, bottom, top)
 
-
-def build_basemap_plane_from_contextily(bbox_3857, z_offset=-1500.0, zoom=6):
-    """
-    Use contextily.bounds2img to fetch satellite tiles for the WECC bbox
-    in EPSG:3857 and map them to a PyVista plane.
-    """
-    xmin, xmax, ymin, ymax = bbox_3857
-    if not _HAS_CTX:
-        raise RuntimeError("contextily not available")
-
-    img, ext = cx.bounds2img(
-        xmin,
-        ymin,
-        xmax,
-        ymax,
-        zoom=zoom,
-        source=cx.providers.Esri.WorldImagery,
-        ll=False,  # our bounds are already in EPSG:3857
-    )
-    # ext is (left, bottom, right, top)
-    left, bottom, right, top = ext
-    width = right - left
-    height = top - bottom
-
-    if img.dtype != np.uint8:
-        img = img.astype(np.uint8)
-
-    plane = pv.Plane(
-        center=((left + right) / 2, (bottom + top) / 2, z_offset),
-        i_size=width,
-        j_size=height,
-        i_resolution=max(img.shape[1] - 1, 1),
-        j_resolution=max(img.shape[0] - 1, 1),
-    )
-    plane.texture_map_to_plane(inplace=True)
-    tex = pv.Texture(img)
-    tex.flip_y = True  # keep map north-up when mapped onto the plane
-    return plane, tex, (left, right, bottom, top)
-
-
-# --------- Time‑varying data ----------
 
 def load_branch_currents():
     path = FILES["branch_current"]
@@ -450,51 +358,21 @@ def render_network_pyvista(
 
     # Basemap / frame
     if use_basemap:
-        # Try contextily first (satellite tiles)
-        if _HAS_CTX:
-            try:
-                plane, tex, _ = build_basemap_plane_from_contextily(
-                    bbox_3857, z_offset=BASEMAP_Z_OFFSET, zoom=6
-                )
-                plotter.add_mesh(plane, texture=tex, smooth_shading=False)
-                print("[basemap] using contextily (Esri WorldImagery)")
-            except Exception as e:
-                print(f"[basemap] contextily failed: {e}")
-                # Fall back to GeoTIFF if present
-                try:
-                    plane, tex, _ = build_basemap_plane_from_geotiff(
-                        FILES["basemap"], z_offset=BASEMAP_Z_OFFSET
-                    )
-                    plotter.add_mesh(plane, texture=tex, smooth_shading=False)
-                    print("[basemap] using GeoTIFF fallback")
-                except Exception as e2:
-                    print(f"[basemap] GeoTIFF fallback failed: {e2}")
-                    frame_z = -0.001 * (ymax - ymin)
-                    frame = pv.Cube(
-                        center=((xmin + xmax) / 2, (ymin + ymax) / 2, frame_z),
-                        x_length=(xmax - xmin),
-                        y_length=(ymax - ymin),
-                        z_length=(ymax - ymin) * 0.0005,
-                    )
-                    plotter.add_mesh(frame, opacity=0.05, show_edges=True)
-        else:
-            # No contextily: try GeoTIFF, then simple frame
-            try:
-                plane, tex, _ = build_basemap_plane_from_geotiff(
-                    FILES["basemap"], z_offset=BASEMAP_Z_OFFSET
-                )
-                plotter.add_mesh(plane, texture=tex, smooth_shading=False)
-                print("[basemap] using GeoTIFF (no contextily)")
-            except Exception as e:
-                print(f"[basemap] skipped: {e}")
-                frame_z = -0.001 * (ymax - ymin)
-                frame = pv.Cube(
-                    center=((xmin + xmax) / 2, (ymin + ymax) / 2, frame_z),
-                    x_length=(xmax - xmin),
-                    y_length=(ymax - ymin),
-                    z_length=(ymax - ymin) * 0.0005,
-                )
-                plotter.add_mesh(frame, opacity=0.05, show_edges=True)
+        try:
+            plane, tex, _ = build_basemap_plane_from_geotiff(
+                FILES["basemap"], z_offset=BASEMAP_Z_OFFSET
+            )
+            plotter.add_mesh(plane, texture=tex, smooth_shading=False)
+        except Exception as e:
+            print(f"[basemap] skipped: {e}")
+            frame_z = -0.001 * (ymax - ymin)
+            frame = pv.Cube(
+                center=((xmin + xmax) / 2, (ymin + ymax) / 2, frame_z),
+                x_length=(xmax - xmin),
+                y_length=(ymax - ymin),
+                z_length=(ymax - ymin) * 0.0005,
+            )
+            plotter.add_mesh(frame, opacity=0.05, show_edges=True)
     else:
         frame_z = -0.001 * (ymax - ymin)
         frame = pv.Cube(
@@ -551,13 +429,15 @@ def render_network_pyvista(
         )
 
     # ---------- Nodes (buses, gens, loads) ----------
-    gen_actors_by_key = {}
+    gen_actors_by_key = {}  # gen_key -> cylinder actor
     gen_label_positions = []
     gen_label_texts = []
 
     base_bus_r = 0.003 * (xmax - xmin)
     base_gen_r = 0.0024 * (xmax - xmin)
     base_load_r = 0.0024 * (xmax - xmin)
+
+    # height of generator cylinders (relative to bus radius)
     gen_cyl_height = 3.0 * base_gen_r
 
     for n, d in G.nodes(data=True):
@@ -569,6 +449,7 @@ def render_network_pyvista(
             plotter.add_mesh(sph, color="white")
 
         elif kind == "gen":
+            # Cylinders instead of capsules for compatibility
             cyl_center = (x, y, z + gen_cyl_height / 2.0)
             cylinder = pv.Cylinder(
                 center=cyl_center,
@@ -581,7 +462,7 @@ def render_network_pyvista(
             gen_key = d.get("gen_key")
             if gen_key:
                 gen_actors_by_key[gen_key] = actor
-                # label above the top of the cylinder
+                # label a bit above the top of the cylinder
                 label_z = z + gen_cyl_height * 0.9
                 gen_label_positions.append([x, y, label_z])
                 gen_label_texts.append(str(gen_key))
@@ -590,13 +471,13 @@ def render_network_pyvista(
             sph = pv.Sphere(radius=base_load_r, center=(x, y, z))
             plotter.add_mesh(sph, color="orange")
 
-    # Generator labels: green text, no background shape
+    # Generator labels: white text with green square background
     if gen_label_positions:
         plotter.add_point_labels(
             gen_label_positions,
             gen_label_texts,
             point_size=0,
-            font_size=18,
+            font_size=30,
             text_color="green",
             always_visible=True,
         )
@@ -639,7 +520,7 @@ def render_network_pyvista(
         else:
             gen_cols = available_cols
             gen_use_df = gen_df[gen_cols]
-            # global min/max across all generators & time
+            # full-range min/max across all generators & timesteps
             gen_norm = compute_minmax_norm(gen_df[gen_cols])
             gen_cmap = colormaps.get_cmap("plasma")
 
@@ -674,6 +555,7 @@ def render_network_pyvista(
     BRANCH_GAMMA = 0.6
     GEN_GAMMA = 0.6
 
+    # Keep both time index and a handle to the current time-text actor
     state = {"idx": 0, "time_text_actor": None}
 
     # Static hint text
@@ -698,6 +580,7 @@ def render_network_pyvista(
                     continue
                 mag = abs(float(val))
                 t = branch_norm(mag)
+                # clamp before fractional power to avoid invalids
                 t = float(np.clip(t, 0.0, 1.0))
                 t = t ** BRANCH_GAMMA
                 rgba = branch_cmap(t)
@@ -865,11 +748,11 @@ def render_network_matplotlib(G, pos):
 
 def main():
     buses, branches, gens, loads, outline = load_tables()
+    bbox_ll = geojson_bounds_ll(outline)
+    bbox_3857 = project_bbox_to_3857(bbox_ll)
 
     G = build_graph(buses, branches, gens, loads)
-
-    # Use real lat/lon positions for buses (projected to EPSG:3857)
-    pos, bbox_3857 = compute_layout_positions(G, buses)
+    pos = compute_layout_positions(G, bbox_3857)
 
     branch_times, branch_df = load_branch_currents()
     gen_times, gen_df = load_gen_freq()

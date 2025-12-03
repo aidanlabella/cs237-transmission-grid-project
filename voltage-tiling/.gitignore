@@ -1,6 +1,0 @@
-.DS_Store
-*.xlsx
-.Rproj.user
-*_matrix.rds
-.env
-data/10x/buses_buffer_*
